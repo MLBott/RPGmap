@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slay the Spire - Map Visualizer</title>
+    <style>
+        body { 
+            margin: 20px; 
+            display: flex; 
+            flex-direction: column;
+            justify-content: center; 
+            align-items: center; 
+            min-height: 95vh; 
+            background-color: #2c3e50; /* Dark blue-grey background */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #ecf0f1; /* Light text color */
+        }
+        #controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #34495e; /* Slightly lighter dark blue-grey */
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        #controls label {
+            margin-right: 10px;
+        }
+        #controls textarea {
+            width: 100%;
+            min-height: 100px;
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #7f8c8d; /* Grey border */
+            background-color: #ecf0f1; /* Light background for textarea */
+            color: #2c3e50; /* Dark text for textarea */
+            box-sizing: border-box;
+        }
+        #controls button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background-color: #27ae60; /* Green */
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #controls button:hover {
+            background-color: #2ecc71; /* Lighter green */
+        }
+        canvas { 
+            border: 2px solid #7f8c8d; /* Grey border for canvas */
+            background-color: #34495e; /* Darker background for canvas itself */
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        #instructions {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #bdc3c7; /* Lighter grey for instructions */
+            text-align: center;
+            max-width: 600px;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <label for="jsonData">Paste Map JSON Data Here:</label>
+        <textarea id="jsonData" rows="8" placeholder="JSON output from the Python script..."></textarea>
+        <button id="renderButton">Render Map</button>
+    </div>
+
+    <canvas id="mapCanvas"></canvas>
+
+    <div id="instructions">
+        <p><strong>How to use:</strong></p>
+        <ol>
+            <li>Run the Python map generator script.</li>
+            <li>Copy the entire JSON output from the Python script's console.</li>
+            <li>Paste the JSON data into the text area above.</li>
+            <li>Click the "Render Map" button.</li>
+        </ol>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const jsonDataInput = document.getElementById('jsonData');
+        const renderButton = document.getElementById('renderButton');
+
+        // --- Default Configuration and Styling ---
+        const PADDING = 50;         // Padding around the map drawing area
+        const NODE_RADIUS = 18;     // Radius of the node circles
+        const NODE_DIAMETER = NODE_RADIUS * 2;
+        const HORIZONTAL_SPACING_FACTOR = 3.5; // Multiplier for horizontal spacing based on radius
+        const VERTICAL_SPACING_FACTOR = 3.0;   // Multiplier for vertical spacing based on radius
+
+        // Colors for different location types
+        const LOCATION_COLORS = {
+            MONSTER: '#e74c3c',     // Red
+            ELITE: '#c0392b',       // Darker Red
+            MERCHANT: '#2ecc71',    // Green
+            REST_SITE: '#3498db',   // Blue
+            TREASURE: '#f1c40f',    // Yellow
+            EVENT: '#9b59b6',       // Purple
+            BOSS: '#d35400',       // Orange (for visibility against dark background)
+            EMPTY: '#95a5a6'        // Grey for unused/empty nodes
+        };
+
+        // Symbols for different location types
+        const LOCATION_SYMBOLS = {
+            MONSTER: 'M',
+            ELITE: 'E',
+            MERCHANT: '$',
+            REST_SITE: 'R',
+            TREASURE: 'T',
+            EVENT: '?',
+            BOSS: 'B',
+            EMPTY: ''
+        };
+
+        function drawMap(mapData) {
+            if (!mapData || !mapData.nodes || !mapData.edges || !mapData.config) {
+                console.error("Invalid map data structure provided.");
+                alert("Error: Invalid map data structure. Please check the JSON input.");
+                return;
+            }
+
+            const { numGameRows, numCols, visualBossRow } = mapData.config;
+            // Total rows to display includes the game rows and the boss row if it's above them
+            const totalVisualRows = Math.max(numGameRows, visualBossRow +1);
+
+
+            // Calculate canvas dimensions
+            canvas.width = numCols * (NODE_DIAMETER * HORIZONTAL_SPACING_FACTOR / 2.5) + PADDING * 2;
+            canvas.height = totalVisualRows * (NODE_DIAMETER * VERTICAL_SPACING_FACTOR / 2) + PADDING * 2;
+            
+            // Clear canvas for redraw
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#34495e'; // Set background for canvas content area
+            ctx.fillRect(0,0, canvas.width, canvas.height);
+
+
+            // Helper function to get screen coordinates for a node
+            // Slay the Spire map is bottom-up (row 0 at the bottom)
+            function getNodeScreenCoords(node) {
+                const gridContentHeight = canvas.height - PADDING * 2;
+                const gridContentWidth = canvas.width - PADDING * 2;
+                
+                // Y coordinate: row 0 is at the bottom. Higher rows are higher up.
+                // The visualBossRow determines the topmost row for calculation.
+                const y = canvas.height - PADDING - (node.row * (gridContentHeight / totalVisualRows)) - (gridContentHeight / (totalVisualRows * 2));
+                
+                // X coordinate: standard left-to-right
+                const x = PADDING + (node.col * (gridContentWidth / numCols)) + (gridContentWidth / (numCols * 2));
+                return { x, y };
+            }
+
+            // Create a map of node IDs to their data for quick lookup
+            const nodesMap = new Map(mapData.nodes.map(node => [node.id, node]));
+
+            // 1. Draw Edges
+            ctx.strokeStyle = '#7f8c8d'; // Path color
+            ctx.lineWidth = 2.5;
+            mapData.edges.forEach(edge => {
+                const fromNode = nodesMap.get(edge.from);
+                const toNode = nodesMap.get(edge.to);
+
+                if (fromNode && toNode) {
+                    const start = getNodeScreenCoords(fromNode);
+                    const end = getNodeScreenCoords(toNode);
+                    ctx.beginPath();
+                    ctx.moveTo(start.x, start.y);
+                    ctx.lineTo(end.x, end.y);
+                    ctx.stroke();
+                } else {
+                    // console.warn("Could not find nodes for edge:", edge);
+                }
+            });
+
+            // 2. Draw Nodes
+            mapData.nodes.forEach(node => {
+                if (!node.is_part_of_path) return; // Only draw active nodes
+
+                const { x, y } = getNodeScreenCoords(node);
+                const color = LOCATION_COLORS[node.type] || LOCATION_COLORS.EMPTY;
+                const symbol = LOCATION_SYMBOLS[node.type] || '';
+
+                // Node circle
+                ctx.beginPath();
+                ctx.arc(x, y, NODE_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+
+                // Node border
+                ctx.strokeStyle = '#2c3e50'; // Dark border for nodes
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Symbol inside node
+                ctx.fillStyle = 'white'; // Text color
+                ctx.font = `bold ${NODE_RADIUS * 0.85}px 'Segoe UI', sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(symbol, x, y);
+            });
+
+            // console.log("Map drawn successfully.");
+        }
+        
+        renderButton.addEventListener('click', () => {
+            try {
+                const jsonData = JSON.parse(jsonDataInput.value);
+                drawMap(jsonData);
+            } catch (error) {
+                console.error("Error parsing JSON or drawing map:", error);
+                alert("Failed to render map. Please check the JSON data and console for errors.\n" + error.message);
+            }
+        });
+
+        // Optional: Provide some example JSON for easy testing
+        jsonDataInput.placeholder = `{
+  "nodes": [
+    { "id": "N-0-3", "row": 0, "col": 3, "type": "MONSTER", "is_part_of_path": true, "is_boss": false },
+    { "id": "N-1-3", "row": 1, "col": 3, "type": "EVENT", "is_part_of_path": true, "is_boss": false },
+    { "id": "N-2-3", "row": 2, "col": 3, "type": "BOSS", "is_part_of_path": true, "is_boss": true }
+  ],
+  "edges": [
+    { "from": "N-0-3", "to": "N-1-3" },
+    { "from": "N-1-3", "to": "N-2-3" }
+  ],
+  "config": { "numGameRows": 2, "numCols": 7, "visualBossRow": 2 }
+}`;
+
+    </script>
+</body>
+</html>
