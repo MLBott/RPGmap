@@ -1,391 +1,435 @@
-import random
-import json
-from enum import Enum, auto
-
-# --- Constants ---
-NUM_COLS = 7
-NUM_ROWS = 15  # Game floors 1-15 correspond to rows 0-14
-NUM_PATH_GENERATIONS = 6
-
-# Ascension 20 Location Odds (as per user's initial description)
-LOCATION_ODDS_A20 = {
-    'MONSTER': 0.45,
-    'ELITE': 0.16,
-    'MERCHANT': 0.05,
-    'REST_SITE': 0.11,
-    'TREASURE': 0.03,  # Note: Floor 9 is always Treasure
-    'EVENT': 0.20,
-}
-
-# --- Enums and Helper Classes ---
-
-class LocationType(Enum):
-    EMPTY = auto()      # For nodes not yet assigned or pruned
-    MONSTER = auto()
-    ELITE = auto()
-    MERCHANT = auto()
-    REST_SITE = auto()
-    TREASURE = auto()
-    EVENT = auto()
-    BOSS = auto()
-
-    def to_json(self):
-        """Helper for JSON serialization of the enum member name."""
-        return self.name
+import numpy as np
+import noise
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
+from collections import deque
+from scipy.ndimage import zoom
+import random 
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+import matplotlib.image as mpimg
 
 class Node:
-    """Represents a single room or node on the map."""
-    def __init__(self, row, col):
-        self.row = row  # 0 to NUM_ROWS - 1
-        self.col = col  # 0 to NUM_COLS - 1
-        self.id = f"N-{row}-{col}"  # Unique ID for the node
-        self.location_type = LocationType.EMPTY
-        self.children = []  # List of connected Node objects on the next floor
-        self.parents = []   # List of connected Node objects on the previous floor
-        self.is_part_of_path = False # Flag to check if node is used in any generated path
+    """
+    A class to represent a single point on the map. It holds all the
+    attributes for a specific coordinate, making the map data easier to manage.
+    """
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.elevation = 0.0  # Raw height value, normalized 0-1
+        self.moisture = 0.0   # Raw moisture value, normalized 0-1
+        
+        # Final assigned terrain properties
+        self.terrain_type = ' ' # Single-letter code (e.g., 'M' for Mountain)
+        self.terrain_label = '' # Descriptive name (e.g., "Rocky Mountain")
+        self.is_river = False
 
     def __repr__(self):
-        return f"<Node {self.id} ({self.location_type.name})>"
-
-    def to_json(self):
-        """Converts node data to a JSON-serializable dictionary."""
-        return {
-            "id": self.id,
-            "row": self.row,
-            "col": self.col,
-            "type": self.location_type.to_json() if self.location_type else LocationType.EMPTY.to_json(),
-            "is_part_of_path": self.is_part_of_path,
-            "is_boss": self.location_type == LocationType.BOSS
-        }
-
-# --- Core Map Generation Logic ---
+        """String representation for printing node details."""
+        return (f"Node({self.x}, {self.y}):\n"
+                f"  Elevation: {self.elevation:.2f}\n"
+                f"  Moisture: {self.moisture:.2f}\n"
+                f"  Type: '{self.terrain_type}' ({self.terrain_label})")
 
 class MapGenerator:
-    """Generates the Slay the Spire style map."""
-    def __init__(self, ascension_level=20):
-        self.ascension_level = ascension_level # Could be used for different odds later
-        self.grid = {} # Using a dictionary: {(row, col): Node_instance}
-        self.paths = [] # Stores lists of nodes, each list being a path
-        self.all_edges_coords = set() # Stores ( (r1,c1), (r2,c2) ) tuples for path crossing checks
-        self.boss_node_object = None # Stores the actual Boss Node object
-
-        # Initialize the grid with Node objects
-        for r in range(NUM_ROWS):
-            for c in range(NUM_COLS):
-                self.grid[(r, c)] = Node(r, c)
-
-    def _get_node(self, row, col):
-        """Safely retrieves a node from the grid."""
-        return self.grid.get((row, col))
-
-    def _get_potential_next_nodes(self, current_node_row, current_node_col):
-        """
-        Gets up to 3 closest rooms on the next floor.
-        Connections are typically to (row+1, col-1), (row+1, col), (row+1, col+1).
-        """
-        next_row = current_node_row + 1
-        if next_row >= NUM_ROWS: # Cannot go beyond the last game row
-            return []
-
-        potential_nodes = []
-        for dc in [-1, 0, 1]: # Delta column
-            next_col = current_node_col + dc
-            if 0 <= next_col < NUM_COLS: # Check if column is within bounds
-                node = self._get_node(next_row, next_col)
-                if node:
-                    potential_nodes.append(node)
-        random.shuffle(potential_nodes) # Randomize selection order
-        return potential_nodes
-
-    def _check_path_crossing(self, node1_coords, node2_coords, existing_edges_coords):
-        """
-        Simplified path crossing check.
-        Prevents identical edges and basic visual line crossings on the same floor transition.
-        A true geometric check is more complex.
-        """
-        # Canonical form for the edge (sorted tuple of coordinate tuples)
-        new_edge = tuple(sorted((node1_coords, node2_coords)))
-        if new_edge in existing_edges_coords:
-             return True # This exact edge already exists
-
-        r1, c1 = node1_coords
-        r2, c2 = node2_coords
-
-        # This check is primarily for direct forward connections
-        if r2 != r1 + 1:
-            return False
-
-        # Check for visual crossing with other edges at the same floor transition
-        for (e_r1_s, e_c1_s), (e_r2_s, e_c2_s) in existing_edges_coords:
-            # Ensure edges are ordered for consistent comparison
-            (er1, ec1), (er2, ec2) = tuple(sorted(((e_r1_s, e_c1_s), (e_r2_s, e_c2_s))))
-
-            if er1 == r1 and er2 == r2: # Comparing edges starting and ending on the same floors
-                # If new path starts left of existing path, it must end left_or_equal to avoid visual crossing
-                if c1 < ec1 and c2 > ec2: return True
-                # If new path starts right of existing path, it must end right_or_equal
-                if c1 > ec1 and c2 < ec2: return True
-        return False
-
-
-    def _generate_single_path(self, start_node_col, existing_paths_edges_coords):
-        """
-        Generates one full path from Floor 1 (row 0) up to Floor 15 (row 14).
-        Returns the list of nodes in this path and the coordinate pairs of edges created.
-        """
-        current_path_nodes = []
-        current_path_edges_coords = set() # Edges specific to this path being built
-
-        current_node = self._get_node(0, start_node_col)
-        if not current_node: return [], set()
-        current_path_nodes.append(current_node)
-
-        for _r in range(NUM_ROWS - 1): # Iterate to connect from row 0 up to row 13 (to connect to row 14)
-            potential_next_options = self._get_potential_next_nodes(current_node.row, current_node.col)
-            if not potential_next_options:
-                break # Dead end, path cannot continue
-
-            chosen_next_node = None
-            current_node_coords = (current_node.row, current_node.col)
-
-            # Try to find a connection that doesn't cross existing paths (from all_edges_coords + current_path_edges_coords)
-            for next_node_candidate in potential_next_options:
-                candidate_node_coords = (next_node_candidate.row, next_node_candidate.col)
-                # Check against all global edges AND edges already made in this current path
-                if not self._check_path_crossing(current_node_coords, candidate_node_coords, existing_paths_edges_coords | current_path_edges_coords):
-                    chosen_next_node = next_node_candidate
-                    break
-            
-            if not chosen_next_node and potential_next_options: # Fallback: if all options cross, pick the first one
-                chosen_next_node = potential_next_options[0]
-            elif not chosen_next_node: # No options at all (should be caught by `if not potential_next_options: break`)
-                break # Should not happen if potential_next_options was not empty
-
-            # Add connection
-            current_node.children.append(chosen_next_node)
-            chosen_next_node.parents.append(current_node)
-            
-            # Add edge coordinates (canonical form)
-            new_edge_tuple = tuple(sorted((current_node_coords, (chosen_next_node.row, chosen_next_node.col))))
-            current_path_edges_coords.add(new_edge_tuple)
-
-            current_node = chosen_next_node
-            current_path_nodes.append(current_node)
-
-        return current_path_nodes, current_path_edges_coords
-
-    def generate_map_layout(self):
-        """
-        Generates the paths for the map according to Slay the Spire rules.
-        """
-        self.paths = []
-        self.all_edges_coords = set() # Reset global edges
-        starting_nodes_floor1_cols = [] # Track starting columns for first 2 paths
-
-        for i in range(NUM_PATH_GENERATIONS):
-            chosen_start_col = -1
-            # Rule: First 2 paths must have different start nodes on Floor 1
-            attempts = 0 # Safety break for while loop
-            while attempts < NUM_COLS * 2:
-                potential_start_col = random.randint(0, NUM_COLS - 1)
-                if i < 2: # For the first two paths
-                    if potential_start_col not in starting_nodes_floor1_cols:
-                        chosen_start_col = potential_start_col
-                        starting_nodes_floor1_cols.append(chosen_start_col)
-                        break
-                else: # For subsequent paths, can reuse start nodes
-                    chosen_start_col = potential_start_col
-                    break
-                attempts +=1
-            
-            if chosen_start_col == -1: # Fallback if unique start not found
-                available_cols = [c for c in range(NUM_COLS) if c not in starting_nodes_floor1_cols]
-                chosen_start_col = random.choice(available_cols if available_cols else list(range(NUM_COLS)))
-                if i < 2 and chosen_start_col not in starting_nodes_floor1_cols:
-                     starting_nodes_floor1_cols.append(chosen_start_col)
-
-
-            path_nodes, path_edges_coords = self._generate_single_path(chosen_start_col, self.all_edges_coords)
-            
-            if path_nodes:
-                self.paths.append(path_nodes)
-                self.all_edges_coords.update(path_edges_coords) # Add new edges to global set
-                for node in path_nodes:
-                    node.is_part_of_path = True # Mark node as active
-            # else:
-                # print(f"Warning: Path {i+1} could not be fully generated from col {chosen_start_col}.")
-
-
-    def _get_random_location_type(self):
-        """Return a random location type based on A20 odds."""
-        rand_val = random.random()
-        cumulative = 0
-        for loc_type_str, probability in LOCATION_ODDS_A20.items():
-            cumulative += probability
-            if rand_val < cumulative:
-                return LocationType[loc_type_str]
-        return LocationType.MONSTER # Fallback, should not be reached if odds sum to 1
-
-    def _check_location_rules(self, node, new_loc_type):
-        """
-        Checks all assignment rules for a given node and potential new location type.
-        Returns True if valid, False otherwise.
-        """
-        # Rule: Elite and Rest Sites can’t be assigned below the 6th Floor (row 5).
-        if new_loc_type in [LocationType.ELITE, LocationType.REST_SITE] and node.row < 5: # Floor 6 is row 5
-            return False
-
-        # Rule: Elite, Merchant and Rest Site cannot be consecutive.
-        consecutive_restricted_types = [LocationType.ELITE, LocationType.MERCHANT, LocationType.REST_SITE]
-        if new_loc_type in consecutive_restricted_types:
-            # Check parents
-            for parent in node.parents:
-                if parent.location_type in consecutive_restricted_types:
-                    return False
-            # Check already assigned children (less common if assigning row-by-row, but good for robustness)
-            for child in node.children:
-                if child.location_type in consecutive_restricted_types and child.location_type != LocationType.EMPTY: # Check if child is already assigned
-                    return False
+    """
+    Manages the procedural generation of the entire world map.
+    This class handles noise generation, erosion, and terrain classification.
+    """
+    def __init__(self, width, height, seed=None):
+        self.width = width
+        self.height = height
+        self.seed = seed if seed is not None else np.random.randint(0, 1000)
         
-        # Rule: A Room that has 2 or more Paths going out must have all destinations be unique.
-        # This check is for when 'node' is being assigned. If its parent has multiple children,
-        # 'node' (the current child being assigned) cannot have the same type as an *already assigned* sibling.
-        for parent_node in node.parents:
-            if len(parent_node.children) >= 2:
-                for sibling_node in parent_node.children:
-                    if sibling_node != node and sibling_node.location_type == new_loc_type and new_loc_type != LocationType.EMPTY:
-                        # print(f"Rule fail: Sibling conflict for {node.id} ({new_loc_type.name}) due to {parent_node.id}'s child {sibling_node.id} ({sibling_node.location_type.name})")
-                        return False
+        # Initialize a 2D grid of Node objects
+        self.grid = [[Node(x, y) for x in range(width)] for y in range(height)]
 
-        # Rule: Rest Site cannot be on the 14th Floor (row 13).
-        if new_loc_type == LocationType.REST_SITE and node.row == 13: # 14th floor is row 13
-            return False
+        # --- Generation Parameters ---
+        # Noise settings control the overall shape of the terrain
+        self.elevation_scale = 40.0
+        self.elevation_octaves = 6
+        self.elevation_persistence = 0.5
+        self.elevation_lacunarity = 2.0
 
-        return True
+        self.moisture_scale = 50.0
+        self.moisture_octaves = 4
+        self.moisture_persistence = 0.5
+        self.moisture_lacunarity = 2.0
 
-    def assign_locations(self):
-        """
-        Assigns LocationTypes to all active nodes in the grid based on rules.
-        """
-        active_nodes = [node for node in self.grid.values() if node.is_part_of_path]
+        # Terrain thresholds control biome distribution (0-1 range)
+        self.sea_level = 0.30
+        self.beach_level = 0.32
+        self.forest_level = 0.50
+        self.mountain_level = 0.70
+        self.snow_level = 0.90
+        self.cliff_threshold = 0.08 # Gradient threshold for a cliff
 
-        # 1. Fixed assignments first
-        for node in active_nodes:
-            if node.row == 0: # 1st Floor (row 0) -> Monsters
-                node.location_type = LocationType.MONSTER
-            elif node.row == 8: # 9th Floor (row 8) -> Treasure
-                node.location_type = LocationType.TREASURE
-            elif node.row == 14: # 15th Floor (row 14) -> Rest Sites
-                node.location_type = LocationType.REST_SITE
-        
-        # 2. Assign remaining nodes
-        # Sort by row, then column, for a consistent assignment order. This helps with rule checking.
-        unassigned_nodes = [n for n in active_nodes if n.location_type == LocationType.EMPTY]
-        unassigned_nodes.sort(key=lambda n: (n.row, n.col))
+    def generate_world(self):
+        """Executes all steps to create the world from scratch."""
+        print(f"Generating world with seed: {self.seed}")
+        self._generate_noise_maps()
+        self._create_rivers()
+        self._classify_terrain()
+        self._detect_cliffs()
+        print("World generation complete.")
+        return self.grid
 
-        for node in unassigned_nodes:
-            if node.location_type != LocationType.EMPTY: # Skip if already assigned (e.g. fixed)
+    def _generate_noise_maps(self):
+        """Generates and normalizes elevation and moisture maps."""
+        print("Step 1: Generating noise maps...")
+        elevation_data = np.zeros((self.height, self.width))
+        moisture_data = np.zeros((self.height, self.width))
+
+        for y in range(self.height):
+            for x in range(self.width):
+                elevation_data[y][x] = noise.pnoise2(x / self.elevation_scale, 
+                                                     y / self.elevation_scale,
+                                                     octaves=self.elevation_octaves,
+                                                     persistence=self.elevation_persistence,
+                                                     lacunarity=self.elevation_lacunarity,
+                                                     base=self.seed)
+                
+                moisture_data[y][x] = noise.pnoise2(x / self.moisture_scale, 
+                                                    y / self.moisture_scale,
+                                                    octaves=self.moisture_octaves,
+                                                    persistence=self.moisture_persistence,
+                                                    lacunarity=self.moisture_lacunarity,
+                                                    base=self.seed + 1) # Use a different seed for moisture
+
+        # Normalize maps to a 0-1 range
+        elevation_data = (elevation_data - np.min(elevation_data)) / (np.max(elevation_data) - np.min(elevation_data))
+        moisture_data = (moisture_data - np.min(moisture_data)) / (np.max(moisture_data) - np.min(moisture_data))
+
+        # Assign values to the nodes
+        for y in range(self.height):
+            for x in range(self.width):
+                self.grid[y][x].elevation = elevation_data[y][x]
+                self.grid[y][x].moisture = moisture_data[y][x]
+
+    def _create_rivers(self, num_rivers=15, max_length=200, min_length=10):
+        """Simulates river formation using a steepest-descent path."""
+        print("Step 2: Carving rivers...")
+        rivers_created = 0
+        # Try more times than num_rivers, as some attempts will fail
+        for _ in range(num_rivers * 10): 
+            if rivers_created >= num_rivers:
+                break
+
+            # Find a random starting point in a high-elevation area
+            x, y = np.random.randint(0, self.width), np.random.randint(0, self.height)
+            if self.grid[y][x].elevation < self.mountain_level:
                 continue
-
-            assigned_successfully = False
-            # Try assigning based on weighted odds, checking rules.
-            # Give a few attempts to find a rule-compliant type via weighted random choice.
-            for _ in range(20): # Number of attempts to get a valid type by odds
-                potential_loc_type = self._get_random_location_type()
-                if self._check_location_rules(node, potential_loc_type):
-                    node.location_type = potential_loc_type
-                    assigned_successfully = True
-                    break
             
-            if not assigned_successfully:
-                # If weighted random choice fails after several attempts,
-                # try iterating through all possible types to find *any* valid one.
-                # This prioritizes rule compliance over exact odds if map is too constrained.
-                possible_types_shuffled = list(LOCATION_ODDS_A20.keys())
-                random.shuffle(possible_types_shuffled)
-                for type_str in possible_types_shuffled:
-                    potential_loc_type = LocationType[type_str]
-                    if self._check_location_rules(node, potential_loc_type):
-                        node.location_type = potential_loc_type
-                        assigned_successfully = True
+            # --- 1. Trace the potential river path without modifying the grid ---
+            path = []
+            current_x, current_y = x, y
+            
+            for _ in range(max_length):
+                # Stop if we flow into an existing river or the sea
+                if self.grid[current_y][current_x].is_river or self.grid[current_y][current_x].elevation < self.sea_level:
+                    break
+                
+                path.append((current_y, current_x))
+                
+                # Find the neighbor with the lowest elevation
+                neighbors = []
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        if dx == 0 and dy == 0: continue
+                        nx, ny = current_x + dx, current_y + dy
+                        if 0 <= nx < self.width and 0 <= ny < self.height:
+                            neighbors.append((ny, nx))
+                
+                if not neighbors: break
+
+                next_y, next_x = min(neighbors, key=lambda p: self.grid[p[0]][p[1]].elevation)
+                
+                # Stop if we're in a pit (local minima)
+                if self.grid[next_y][next_x].elevation >= self.grid[current_y][current_x].elevation:
+                    break
+                    
+                current_x, current_y = next_x, next_y
+            
+            # --- 2. If the path is long enough, apply it to the grid ---
+            if len(path) >= min_length:
+                rivers_created += 1
+                for ry, rx in path:
+                    node = self.grid[ry][rx]
+                    node.is_river = True
+                    # Lower elevation to "carve" the riverbed
+                    node.elevation = max(self.sea_level - 0.05, node.elevation * 0.85)
+
+
+    def _classify_terrain(self):
+        """Assigns a terrain type and label to each node based on its properties."""
+        print("Step 3: Classifying terrain biomes...")
+        for y in range(self.height):
+            for x in range(self.width):
+                node = self.grid[y][x]
+                
+                # River classification must come first
+                if node.is_river:
+                    node.terrain_type = 'R'
+                    node.terrain_label = 'River'
+                    continue
+
+                if node.elevation < self.sea_level:
+                    node.terrain_type = 'D'
+                    node.terrain_label = 'Deep Water'
+                elif node.elevation < self.beach_level:
+                    node.terrain_type = 'S'
+                    node.terrain_label = 'Sandy Beach'
+                elif node.elevation >= self.snow_level:
+                    node.terrain_type = 'P'
+                    node.terrain_label = 'Snowy Peak'
+                elif node.elevation >= self.mountain_level:
+                    node.terrain_type = 'M'
+                    node.terrain_label = 'Rocky Mountain'
+                elif node.elevation >= self.forest_level:
+                    if node.moisture > 0.4:
+                        node.terrain_type = 'F'
+                        node.terrain_label = 'Dense Forest'
+                    else:
+                        node.terrain_type = 'H'
+                        node.terrain_label = 'Highlands'
+                else: # Plains and Grasslands
+                    if node.moisture > 0.5:
+                        node.terrain_type = 'f'
+                        node.terrain_label = 'Forested Plains'
+                    elif node.moisture > 0.3:
+                        node.terrain_type = 'p'
+                        node.terrain_label = 'Plains'
+                    else:
+                        node.terrain_type = 'g'
+                        node.terrain_label = 'Grassland'
+
+    def _detect_cliffs(self):
+        """A second pass to identify steep areas as cliffs."""
+        print("Step 4: Detecting cliffs...")
+        for y in range(1, self.height):
+            for x in range(1, self.width):
+                node = self.grid[y][x]
+                # Don't create cliffs on rivers
+                if node.is_river:
+                    continue
+                if node.elevation > self.beach_level:
+                    # Calculate gradient
+                    dx = node.elevation - self.grid[y][x-1].elevation
+                    dy = node.elevation - self.grid[y-1][x].elevation
+                    gradient = np.sqrt(dx*dx + dy*dy)
+                    
+                    if gradient > self.cliff_threshold:
+                        node.terrain_type = 'C'
+                        node.terrain_label = 'Steep Cliff Face'
+
+    def add_castle_region(self, size=70, terrain_types=('p', 'g')):
+        """
+        Adds a solid castle region of `size` nodes, starting from a random suitable location.
+        Only expands into nodes of the given terrain_types (e.g., plains, grassland).
+        """
+        from collections import deque
+
+        # Find all possible starting points
+        candidates = [(y, x) for y in range(self.height) for x in range(self.width)
+                    if self.grid[y][x].terrain_type in terrain_types]
+        if not candidates:
+            print("No suitable starting point for castle.")
+            return
+
+        start_y, start_x = random.choice(candidates)
+        castle_nodes = set()
+        queue = deque()
+        queue.append((start_y, start_x))
+        castle_nodes.add((start_y, start_x))
+
+        while queue and len(castle_nodes) < size:
+            cy, cx = queue.popleft()
+            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                ny, nx = cy + dy, cx + dx
+                if (0 <= ny < self.height and 0 <= nx < self.width and
+                    (ny, nx) not in castle_nodes and
+                    self.grid[ny][nx].terrain_type in terrain_types):
+                    castle_nodes.add((ny, nx))
+                    queue.append((ny, nx))
+                    if len(castle_nodes) >= size:
                         break
 
-            if not assigned_successfully:
-                # Absolute fallback: If no rule-compliant assignment found, assign MONSTER.
-                # This should be rare with well-defined rules and map structure.
-                # print(f"Warning: Could not assign valid location to {node.id} after all attempts. Defaulting to MONSTER.")
-                node.location_type = LocationType.MONSTER
+        # Assign castle terrain type
+        for y, x in castle_nodes:
+            self.grid[y][x].terrain_type = 'K'
+            self.grid[y][x].terrain_label = 'Castle'
 
+        print(f"Castle region created with {len(castle_nodes)} nodes.")
 
-    def add_boss_node(self):
-        """
-        Adds a Boss Room at the top, connecting to all active rooms on the 15th Floor (row 14).
-        """
-        # Boss node is conceptually at a row above the last game row (NUM_ROWS)
-        boss_row_visual = NUM_ROWS
-        boss_col_visual = NUM_COLS // 2 # Centered
+    # Add 'K' to your color_map and legend in draw_graphical_map and get_legend_labels:
+    # 'K': [160/255, 82/255, 45/255],  # Example: brown for castle
+
+    def draw_text_map(self):
+        """Prints a simple text-based representation of the map to the console."""
+        print("\n--- Text Map ---")
+        for y in range(self.height):
+            row = ''.join([self.grid[y][x].terrain_type for x in range(self.width)])
+            print(row)
+
+    def draw_graphical_map(self):
+        """Uses matplotlib to draw a color-coded image of the map, with a Save PNG button."""
+        print("\nGenerating graphical map (close window to exit)...")
         
-        self.boss_node_object = Node(boss_row_visual, boss_col_visual)
-        self.boss_node_object.location_type = LocationType.BOSS
-        self.boss_node_object.is_part_of_path = True # Mark as active for export
-        # The boss node is not added to self.grid to avoid messing with NUM_ROWS logic for game floors
-
-        nodes_on_final_floor = [
-            n for n in self.grid.values() if n.row == NUM_ROWS - 1 and n.is_part_of_path
-        ]
-        for node_on_f15 in nodes_on_final_floor:
-            node_on_f15.children.append(self.boss_node_object) # Link from F15 to Boss
-            self.boss_node_object.parents.append(node_on_f15)  # Link from Boss to F15 (for completeness)
-
-
-    def export_map_data_for_canvas(self):
-        """
-        Exports all active nodes and their connections in a format suitable for JSON.
-        This data will be used by the HTML/JavaScript canvas renderer.
-        """
-        nodes_data = []
-        edges_data = [] # List of {"from": node_id1, "to": node_id2}
-
-        # Add all active game nodes
-        for node in self.grid.values():
-            if node.is_part_of_path:
-                nodes_data.append(node.to_json())
-                # Add edges originating from this node
-                for child_node in node.children:
-                    if child_node.is_part_of_path: # Ensure child is also active (boss node will be)
-                         edges_data.append({"from": node.id, "to": child_node.id})
-        
-        # Add boss node data if it exists
-        if self.boss_node_object:
-            boss_json = self.boss_node_object.to_json()
-            # Avoid duplicates if it was somehow added through grid iteration (should not happen with current setup)
-            if not any(n['id'] == boss_json['id'] for n in nodes_data):
-                 nodes_data.append(boss_json)
-            # Edges to the boss node were already added when iterating through its parents' children list.
-
-        return {
-            "nodes": nodes_data,
-            "edges": edges_data,
-            "config": {
-                "numGameRows": NUM_ROWS, # Actual number of playable rows (0 to NUM_ROWS-1)
-                "numCols": NUM_COLS,
-                # The row index the boss should appear on visually (one above the last game row)
-                "visualBossRow": self.boss_node_object.row if self.boss_node_object else NUM_ROWS 
-            }
+        color_map = {
+            'D': [26/255, 56/255, 97/255],
+            'R': [108/255, 157/255, 202/255],
+            'S': [230/255, 216/255, 170/255],
+            'g': [152/255, 179/255, 103/255],
+            'p': [192/255, 179/255, 115/255],
+            'f': [103/255, 146/255, 99/255],
+            'F': [54/255, 79/255, 59/255],
+            'H': [153/255, 119/255, 84/255],
+            'M': [100/255, 100/255, 100/255],
+            'C': [45/255, 45/255, 45/255],
+            'P': [248/255, 250/255, 255/255],
+            'K': [90/255, 110/255, 125/255],  # Castle (brown)
         }
 
-    def generate_full_map(self):
-        """Orchestrates the entire map generation process."""
-        self.generate_map_layout()
-        self.assign_locations()
-        self.add_boss_node()
-        return self.export_map_data_for_canvas()
+        image_data = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        for y in range(self.height):
+            for x in range(self.width):
+                terrain = self.grid[y][x].terrain_type
+                image_data[y, x] = color_map.get(terrain, [0, 0, 0])
+    
+        # 🪄 Resample the image using smooth zoom, then show with no interpolation
+        upscale_factor = 8  # You can tweak this (e.g., 4-8 for 100x100 maps)
+        smoothed_image = zoom(image_data, (upscale_factor, upscale_factor, 1), order=1)  # cubic interpolation
+
+        fig, ax = plt.subplots(figsize=(12, 12))
+        plt.subplots_adjust(bottom=0.15)
+        ax.imshow(smoothed_image, interpolation='none')  # Don't blur further
+        ax.axis('off')  # cleaner export
+
+        
+            
+        # Create a legend
+        legend_elements = [plt.Rectangle((0, 0), 1, 1, color=color_map[key], label=f"{key}: {label}")
+                           for key, label in self.get_legend_labels().items()]
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax.set_title(f"Procedural World Map (Seed: {self.seed})")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        # Example: plot a little tree icon at (x, y)
+        
+        tree_img = mpimg.imread('tree_icon.png')  # Use a small PNG with transparency
+        peakL_img = mpimg.imread('peakL_icon.png')  # Use a small PNG with transparency
+        wave_img = mpimg.imread('wave_icon.png')  # Use a small PNG with transparency
+        grass_img = mpimg.imread('grass_icon.png')  # Use a small PNG with transparency
+        tower_img = mpimg.imread('tower_icon.png')  # Use a small PNG with transparency
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'F' and random.random() < 0.3:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(tree_img, zoom=0.06)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'f' and random.random() < 0.1:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(tree_img, zoom=0.06)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'M' and random.random() < 0.04:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(peakL_img, zoom=0.09)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'P' and random.random() < 0.06:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(peakL_img, zoom=0.12)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'D' and random.random() < 0.01:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(wave_img, zoom=0.012)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'g' and random.random() < 0.2:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(grass_img, zoom=0.01)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'f' and random.random() < 0.06:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(grass_img, zoom=0.01)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'p' and random.random() < 0.04:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(grass_img, zoom=0.01)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+            for x in range(self.width):
+                if self.grid[y][x].terrain_type == 'K' and random.random() < 0.04:
+                    ux, uy = x * upscale_factor, y * upscale_factor
+                    imagebox = OffsetImage(tower_img, zoom=0.035)  # Adjust zoom as needed
+                    ab = AnnotationBbox(imagebox, (ux, uy), frameon=False)
+                    ax.add_artist(ab)
+
+        ax.plot([x], [y], marker='^', color='darkgreen', markersize=4)
+        # Add Save PNG button
+        ax_save = plt.axes([0.4, 0.03, 0.2, 0.06])  # x, y, width, height
+        btn_save = Button(ax_save, 'Save as PNG', color='#cccccc', hovercolor='#aaaaaa')
+
+        def save_png(event):
+            fig.savefig('generated_map.png', bbox_inches='tight')
+            print("Map saved as generated_map.png")
+
+        # Optional: Save directly
+        fig.savefig("map_output.png", dpi=300, bbox_inches='tight')
+        btn_save.on_clicked(save_png)
+        plt.show()
+        
+  
+        
+    def get_legend_labels(self):
+        """Returns a dictionary of labels for the legend."""
+        return {
+            'D': 'Deep Water', 'R': 'River', 'S': 'Sandy Beach',
+            'g': 'Grassland', 'p': 'Plains', 'f': 'Forested Plains',
+            'F': 'Dense Forest', 'H': 'Highlands', 'M': 'Rocky Mountain',
+            'C': 'Cliff', 'P': 'Snowy Peak', 'K': 'Castle'
+        }
+
+    def get_node_details(self, x, y):
+        """Returns the full details of a specific node."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.grid[y][x]
+        return "Coordinates out of bounds."
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    generator = MapGenerator(ascension_level=20)
-    map_data_for_canvas = generator.generate_full_map()
+    # Create and generate the map
+    generator = MapGenerator(width=100, height=100)
+    world_grid = generator.generate_world()
     
-    # Output the generated map data as a JSON string
-    # This JSON can then be copied and pasted into the HTML/JS file.
-    print(json.dumps(map_data_for_canvas, indent=2))
+    # Add this line to generate the castle region
+    generator.add_castle_region(size=100, terrain_types=('p', 'g'))
+
+    # --- Display the results ---
+    # 1. Simple console output
+    generator.draw_text_map()
+    
+    # 2. Detailed query of a specific node
+    print("\n--- Node Details ---")
+    node_info = generator.get_node_details(50, 50)
+    print(node_info)
+
+    # 3. Graphical map (most informative)
+    generator.draw_graphical_map()
