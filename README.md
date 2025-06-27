@@ -7,7 +7,7 @@
 
 *Enjoy persistent locations in AI content*
 
-[🚀 Quick Start](#-quick-start) • [✨ Features](#-features) • [🎮 Demo](#-demo) • [📖 Documentation](#-documentation)
+[🚀 Quick Start](#-quick-start) • [✨ Features](#-features) • [🎮 Demo](#-demo)
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/liamlb)
 
