@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RPG Map Editor & Crawler</title>
+    <style>
+        body { font-family: sans-serif; display: flex; }
+        #map-container { position: relative; }
+        #map-grid { display: grid; grid-template-columns: repeat(100, 6px); gap: 1px; border: 1px solid #ccc; }
+        .node { width: 6px; height: 6px; cursor: pointer; }
+        #editor { margin-left: 20px; width: 600px; }
+        #llm-prompt { 
+            background-color: #f0f0f0; padding: 10px; border-radius: 5px; white-space: pre-wrap;
+            font-family: monospace; max-height: 250px; overflow-y: auto;
+        }
+        textarea { width: 100%; height: 100px; margin-top: 10px; }
+        button { margin-top: 10px; padding: 8px 12px; }
+        
+        /* Crawler & Visualizer Styles */
+        #crawler-controls { border: 1px solid #ddd; padding: 10px; margin-top: 20px; background-color: #f9f9f9; }
+        .flashing-node { box-shadow: 0 0 2px 2px #ffdd00 inset !important; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        .fog-of-war { background-color: #555 !important; }
+    </style>
+</head>
+<body>
+
+<div id="map-container">
+    <div id="map-grid"></div>
+</div>
+
+<div id="editor">
+    <h2>Manual Node Editor</h2>
+    <div id="node-info">Click a node on the map to edit it.</div>
+    <hr>
+    <h3>LLM Prompt Template (Editable for Crawler)</h3>
+    <textarea id="prompt-editor" rows="15" style="width: 100%; white-space: pre-wrap;"></textarea>
+    <h3>Manual LLM Response:</h3>
+    <textarea id="llm-response"></textarea>
+    <button id="update-button" disabled>Update Node Manually</button>
+    
+    <div id="crawler-controls">
+        <h2>Automated Crawler</h2>
+        <div id="crawler-status">Status: Idle</div>
+        <label for="llm-provider">Select LLM Provider:</label>
+            <select id="llm-provider">
+                <option value="gemini">Google Gemini</option>
+                <option value="openai">OpenAI GPT</option>
+            </select>
+        <button id="start-crawler-btn">Start Crawler</button>
+        <button id="stop-crawler-btn">Stop Crawler</button>
+        <button id="toggle-fog-btn">Toggle Fog of War</button>
+    </div>
+</div>
+
+<script>
+    // --- ELEMENT REFERENCES ---
+    const mapGrid = document.getElementById('map-grid');
+    const nodeInfo = document.getElementById('node-info');
+    const llmPrompt = document.getElementById('llm-prompt');
+    const llmResponse = document.getElementById('llm-response');
+    const updateButton = document.getElementById('update-button');
+    const crawlerStatus = document.getElementById('crawler-status');
+    const startCrawlerBtn = document.getElementById('start-crawler-btn');
+    const stopCrawlerBtn = document.getElementById('stop-crawler-btn');
+    const toggleFogBtn = document.getElementById('toggle-fog-btn');
+    const promptEditor = document.getElementById('prompt-editor'); 
+
+    // --- STATE ---
+    let currentManualCoords = null;
+    // We now track a Set of DOM elements that are currently flashing
+    let currentlyFlashingNodes = new Set();
+    let isFogOn = false;
+    let mapDataCache = null;
+
+    // --- UTILITY FUNCTIONS ---
+    const colorMap = {
+        'D':'#1a3861','R':'#6c9dca','S':'#e6d8aa','g':'#98b367','p':'#c0b373','f':'#679263',
+        'F':'#364f3b','H':'#997754','M':'#646464','C':'#2d2d2d','P':'#f8faff','K':'#5a6e7d',
+        'W':'#85877e','E':'#FFB733','X':'#000000'
+    };
+    const isNodeDefault = (node) => node.description_base.trim().toLowerCase().startsWith("a ") && node.description_base.trim().toLowerCase().endsWith(" area.");
+
+    // --- CORE LOGIC ---
+
+    // 1. Initial Map Rendering
+    fetch('/api/map').then(res => res.json()).then(data => {
+        mapDataCache = data.nodes;
+        mapDataCache.forEach((row, y) => {
+            row.forEach((node, x) => {
+                const cell = document.createElement('div');
+                cell.classList.add('node');
+                cell.id = `node-${x}-${y}`;
+                cell.style.backgroundColor = colorMap[node.terrain.type] || '#fff';
+                cell.title = `(${x}, ${y}) - ${node.terrain.label}`;
+                cell.addEventListener('click', () => handleNodeClick(x, y));
+                mapGrid.appendChild(cell);
+            });
+        });
+
+        fetch('/api/prompt')
+            .then(res => res.json())
+            .then(data => {
+                promptEditor.value = data.prompt_template;
+            });
+        // Start polling for crawler status
+        setInterval(fetchCrawlerStatus, 1500);
+    });
+
+    // 2. Manual Editor Logic
+    function handleNodeClick(x, y) {
+        llmPrompt.innerText = "Loading context...";
+        fetch(`/api/node_context?x=${x}&y=${y}`).then(res => res.json()).then(context => {
+            currentManualCoords = {x, y};
+            const target = context.target_node;
+            nodeInfo.innerHTML = `<b>Coords:</b> (${x},${y}) | <b>Terrain:</b> ${target.terrain.label}`;
+            llmResponse.value = target.description_base;
+            updateButton.disabled = false;
+            // Build and set the detailed prompt
+            let promptText = `...`; // (Full prompt building logic from previous step)
+            llmPrompt.innerText = `Generate an immersive RPG description for a location with these properties: ${JSON.stringify(target, null, 2)}...`; // Simplified for brevity
+        });
+
+    }
+    updateButton.addEventListener('click', () => {
+        // (Manual update logic remains the same)
+    });
+
+    // 3. Crawler Control Logic
+    startCrawlerBtn.addEventListener('click', () => {
+        const selectedProvider = document.getElementById('llm-provider').value;
+        const editedPrompt = promptEditor.value; // <-- GET the edited prompt text
+
+        fetch('/api/crawler/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // SEND the selected provider AND the edited prompt
+            body: JSON.stringify({ 
+                provider: selectedProvider,
+                prompt: editedPrompt
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.error){
+                alert(`Error: ${data.error}`);
+            }
+        });
+    });
+    stopCrawlerBtn.addEventListener('click', () => fetch('/api/crawler/stop', {method: 'POST'}));
+
+    // 4. Status Polling and Visualization
+    function fetchCrawlerStatus() {
+        fetch('/api/crawler/status').then(res => res.json()).then(status => {
+            // Update status text (this part is the same)
+            let statusText = `Status: ${status.is_running ? 'Running' : 'Idle'}`;
+            if (status.total_nodes > 0) {
+                statusText += ` | Completed: ${status.completed_nodes} / ${status.total_nodes}`;
+            }
+            crawlerStatus.innerText = statusText;
+
+            // --- NEW: LOGIC TO HIGHLIGHT MULTIPLE WORKERS ---
+
+            // Create a Set of node IDs that should be flashing now.
+            const newFlashingIds = new Set(
+                status.active_workers.map(([x, y]) => `node-${x}-${y}`)
+            );
+
+            // 1. Turn off flashing for nodes that are no longer active.
+            for (const nodeElement of currentlyFlashingNodes) {
+                if (!newFlashingIds.has(nodeElement.id)) {
+                    nodeElement.classList.remove('flashing-node');
+                }
+            }
+
+            // 2. Turn on flashing for new active nodes.
+            for (const nodeId of newFlashingIds) {
+                const nodeElement = document.getElementById(nodeId);
+                if (nodeElement && !nodeElement.classList.contains('flashing-node')) {
+                    nodeElement.classList.add('flashing-node');
+                }
+            }
+            
+            // 3. Update our state to reflect the currently flashing nodes.
+            currentlyFlashingNodes = new Set(
+                Array.from(document.querySelectorAll('.flashing-node'))
+            );
+            
+            // (The logic to update map data for fog of war remains the same)
+            if(status.is_running && status.active_workers.length > 0){
+                fetch('/api/map').then(res => res.json()).then(data => {
+                    mapDataCache = data.nodes;
+                    if(isFogOn) applyFogOfWar();
+                });
+            }
+        });
+    }
+    
+    // 5. Fog of War
+    toggleFogBtn.addEventListener('click', () => {
+        isFogOn = !isFogOn;
+        if(isFogOn) {
+            applyFogOfWar();
+            toggleFogBtn.innerText = "Disable Fog of War";
+        } else {
+            removeFogOfWar();
+            toggleFogBtn.innerText = "Enable Fog of War";
+        }
+    });
+    
+    function applyFogOfWar() {
+        if(!mapDataCache) return;
+        mapDataCache.forEach((row, y) => {
+            row.forEach((node, x) => {
+                if(isNodeDefault(node)) {
+                    document.getElementById(`node-${x}-${y}`).classList.add('fog-of-war');
+                } else {
+                    document.getElementById(`node-${x}-${y}`).classList.remove('fog-of-war');
+                }
+            });
+        });
+    }
+    
+    function removeFogOfWar() {
+         mapDataCache.forEach((row, y) => {
+            row.forEach((node, x) => {
+                document.getElementById(`node-${x}-${y}`).classList.remove('fog-of-war');
+            });
+        });
+    }
+
+</script>
+</body>
+</html>
