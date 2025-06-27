@@ -1,8 +1,24 @@
-# RealmGen AI 🗺️
+#  RealmGen AI
+### *Procedural worlds, AI-powered storytelling—ready for your next adventure!*
 
-**Procedural worlds, AI-powered storytelling, and collaborative editing—ready for your next adventure!**
+<div align="center">
 
-RPGmap combines classic procedural map generation with modern LLMs to create richly described, interactive fantasy worlds. Generate vast terrains, populate them with AI-crafted descriptions, and explore through an intuitive web interface.
+![RealmGen AI Banner](https://github.com/user-attachments/assets/65eb2f28-ade4-45ce-b722-a91fc53b5d6a)
+
+*Enjoy persistent locations in AI content*
+
+[🚀 Quick Start](#-quick-start) • [✨ Features](#-features) • [🎮 Demo](#-demo) • [📖 Documentation](#-documentation)
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/liamlb)
+
+</div>
+
+---
+
+
+
+
+RealmGen AI combines classic procedural map generation with modern LLMs to create richly described, interactive fantasy worlds. Generate vast terrains, populate them with AI-crafted descriptions, and explore through an intuitive web interface.
 
 ## ✨ Features
 
