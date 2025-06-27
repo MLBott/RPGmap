@@ -88,11 +88,13 @@ RealmGen AI combines classic procedural map generation with modern LLMs to creat
   
 ## 🎮 Demo
 
-```
+### Description:
+Road
 A well-worn dirt road cuts through the landscape, bordered by wildflowers and grass. Sunlight filters through the canopy above, casting shifting shadows on the path below.
-To the north and south, the road connects with the undulating woodland, where tall trees house fluttering birds and the air carries scents of damp bark and moss. A peculiar white mushroom glistens with moisture among the undergrowth, while patches of loose stones add texture to the forest floor.
-In the background, beyond the trees, faint hints of deep waters can be detected—waves murmuring softly against a distant sandy beach. This creates a dynamic atmosphere that connects the road to the expansive world that lies just beyond the immediate embrace of the towering woods.
-```
+To *the north and south,* the road connects with the undulating woodland, where tall trees house fluttering birds and the air carries scents of damp bark and moss. A peculiar white mushroom glistens with moisture among the undergrowth, while patches of loose stones add texture to the forest floor.
+In the background, beyond the trees, *faint hints of deep waters can be detected—waves murmuring softly against a distant sandy beach.*
+[Available exits: N, W, S, SE
+
 ![MWpic2](https://github.com/MLBott/RealmGen-AI/blob/main/node_editor_and_crawler_example.gif)
 
 ## 📂 Project Structure
