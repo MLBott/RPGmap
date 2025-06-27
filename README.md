@@ -92,6 +92,7 @@ RealmGen AI combines classic procedural map generation with modern LLMs to creat
    ```
    The crawlers can take 2+ hours on a 100x100 node map. The map size can be decreased in the python code.
    If the crawlers stall, restart the app.
+   If you want to skip map description generation: Rename the example world map (world_map_example.json) to world_map.json, to use as your world map.
 
 8. **Explore and edit:**  
     
