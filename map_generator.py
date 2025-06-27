@@ -7,6 +7,11 @@ from scipy.ndimage import zoom
 import random 
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import matplotlib.image as mpimg
+import tkinter as tk
+from tkinter import filedialog
+import json
+import sys
+
 
 class Node:
     """
@@ -202,6 +207,14 @@ class MapGenerator:
                     else:
                         node.terrain_type = 'g'
                         node.terrain_label = 'Grassland'
+        for y in range(self.height):
+            for x in range(self.width):
+                node = self.grid[y][x]
+                # Impassable border
+                if x == 0 or y == 0 or x == self.width-1 or y == self.height-1:
+                    node.terrain_type = 'X'
+                    node.terrain_label = 'Impassable'
+                    continue
 
     def _detect_cliffs(self):
         """A second pass to identify steep areas as cliffs."""
@@ -261,8 +274,112 @@ class MapGenerator:
 
         print(f"Castle region created with {len(castle_nodes)} nodes.")
 
-    # Add 'K' to your color_map and legend in draw_graphical_map and get_legend_labels:
-    # 'K': [160/255, 82/255, 45/255],  # Example: brown for castle
+    def add_exits_and_road(self, exit1, road_terrain_types=('p', 'g', 'f', 'F', 'H'), num_side_roads=3):
+        """
+        Adds two exits: one at exit1 (y, x), and one at the farthest reachable border node.
+        Draws a winding road ('W') between them using a randomized A*.
+        Adds several short side roads branching from the main road.
+        """
+        from heapq import heappush, heappop
+
+        # 1. Place the first exit
+        y1, x1 = exit1
+        self.grid[y1][x1].terrain_type = 'E'
+        self.grid[y1][x1].terrain_label = 'Exit'
+
+        # 2. Find all border nodes (excluding corners)
+        border_nodes = []
+        for x in range(1, self.width-1):
+            border_nodes.append((0, x))
+            border_nodes.append((self.height-1, x))
+        for y in range(1, self.height-1):
+            border_nodes.append((y, 0))
+            border_nodes.append((y, self.width-1))
+        border_nodes = [pos for pos in border_nodes if pos != (y1, x1)]
+
+        # 3. BFS to find all reachable border nodes from exit1
+        visited = set()
+        queue = deque()
+        queue.append((y1, x1))
+        visited.add((y1, x1))
+        reachable = set()
+        while queue:
+            cy, cx = queue.popleft()
+            if (cy, cx) in border_nodes:
+                reachable.add((cy, cx))
+            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                ny, nx = cy + dy, cx + dx
+                if (0 <= ny < self.height and 0 <= nx < self.width and
+                    (ny, nx) not in visited and
+                    self.grid[ny][nx].terrain_type in road_terrain_types):
+                    visited.add((ny, nx))
+                    queue.append((ny, nx))
+
+        # 4. Pick the farthest reachable border node
+        if reachable:
+            y2, x2 = max(reachable, key=lambda pos: (pos[0]-y1)**2 + (pos[1]-x1)**2)
+        else:
+            y2, x2 = max(border_nodes, key=lambda pos: (pos[0]-y1)**2 + (pos[1]-x1)**2)
+        self.grid[y2][x2].terrain_type = 'E'
+        self.grid[y2][x2].terrain_label = 'Exit'
+
+        # 5. Randomized A* for winding main road
+        def heuristic(a, b):
+            # Add a small random value to the heuristic to encourage winding
+            return ((a[0]-b[0])**2 + (a[1]-b[1])**2) ** 0.5 + random.uniform(0, 1.1)
+
+        open_set = []
+        heappush(open_set, (0 + heuristic((y1, x1), (y2, x2)), 0, (y1, x1), []))
+        closed = set()
+        main_road = set()
+        while open_set:
+            est_total, cost, (cy, cx), path = heappop(open_set)
+            if (cy, cx) == (y2, x2):
+                for py, px in path:
+                    if self.grid[py][px].terrain_type not in ('E', 'X'):
+                        self.grid[py][px].terrain_type = 'W'
+                        self.grid[py][px].terrain_label = 'Road'
+                        main_road.add((py, px))
+                break
+            if (cy, cx) in closed:
+                continue
+            closed.add((cy, cx))
+            neighbors = []
+            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                ny, nx = cy + dy, cx + dx
+                if (0 <= ny < self.height and 0 <= nx < self.width and
+                    self.grid[ny][nx].terrain_type in road_terrain_types + ('E',)):
+                    neighbors.append((ny, nx))
+            # Shuffle neighbors to add more randomness
+            random.shuffle(neighbors)
+            for ny, nx in neighbors:
+                if (ny, nx) not in closed:
+                    heappush(open_set, (cost+1+heuristic((ny, nx), (y2, x2)), cost+1, (ny, nx), path+[(ny, nx)]))
+
+        # 6. Add side roads branching from the main road
+        main_road_list = list(main_road)
+        for _ in range(num_side_roads):
+            if not main_road_list:
+                break
+            start = random.choice(main_road_list)
+            length = random.randint(8, 18)
+            cy, cx = start
+            branch_path = []
+            for _ in range(length):
+                candidates = []
+                for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    ny, nx = cy + dy, cx + dx
+                    if (0 <= ny < self.height and 0 <= nx < self.width and
+                        self.grid[ny][nx].terrain_type in road_terrain_types and
+                        (ny, nx) not in main_road and (ny, nx) not in branch_path):
+                        candidates.append((ny, nx))
+                if not candidates:
+                    break
+                ny, nx = random.choice(candidates)
+                self.grid[ny][nx].terrain_type = 'W'
+                self.grid[ny][nx].terrain_label = 'Road'
+                branch_path.append((ny, nx))
+                cy, cx = ny, nx
 
     def draw_text_map(self):
         """Prints a simple text-based representation of the map to the console."""
@@ -287,7 +404,10 @@ class MapGenerator:
             'M': [100/255, 100/255, 100/255],
             'C': [45/255, 45/255, 45/255],
             'P': [248/255, 250/255, 255/255],
-            'K': [90/255, 110/255, 125/255],  # Castle (brown)
+            'K': [90/255, 110/255, 125/255],  # Castle (blue gray)
+            'W': [133/255, 135/255, 126/255],  # Road (brownish)
+            'E': [1.0, 0.7, 0.2],  # Exit (gold)
+            'X': [0.2, 0.2, 0.2]  # Impassable (gray)
         }
 
         image_data = np.zeros((self.height, self.width, 3), dtype=np.float32)
@@ -304,14 +424,12 @@ class MapGenerator:
         plt.subplots_adjust(bottom=0.15)
         ax.imshow(smoothed_image, interpolation='none')  # Don't blur further
         ax.axis('off')  # cleaner export
+        ax.set_title(f"Procedural World Map (Seed: {self.seed})")
 
-        
-            
         # Create a legend
         legend_elements = [plt.Rectangle((0, 0), 1, 1, color=color_map[key], label=f"{key}: {label}")
                            for key, label in self.get_legend_labels().items()]
         ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
-        ax.set_title(f"Procedural World Map (Seed: {self.seed})")
         ax.set_xticks([])
         ax.set_yticks([])
         # Example: plot a little tree icon at (x, y)
@@ -387,24 +505,58 @@ class MapGenerator:
         ax_save = plt.axes([0.4, 0.03, 0.2, 0.06])  # x, y, width, height
         btn_save = Button(ax_save, 'Save as PNG', color='#cccccc', hovercolor='#aaaaaa')
 
-        def save_png(event):
-            fig.savefig('generated_map.png', bbox_inches='tight')
-            print("Map saved as generated_map.png")
+        # 1. Define the callback function for the JSON button
+        def save_json(event):
+            self.export_to_json() # Calls the export method
 
-        # Optional: Save directly
-        fig.savefig("map_output.png", dpi=300, bbox_inches='tight')
-        btn_save.on_clicked(save_png)
+        # 2. Define the callback function for the PNG button
+        def save_png(event):
+            fig.savefig('generated_map.png', bbox_inches='tight', dpi=300)
+            print("Map image saved as generated_map.png")
+
+        # 3. Create axes for the buttons, placing them side-by-side
+        # [left, bottom, width, height]
+        ax_save_png = plt.axes([0.31, 0.03, 0.18, 0.06])
+        ax_save_json = plt.axes([0.51, 0.03, 0.18, 0.06])
+
+        # 4. Create the button widgets on their respective axes
+        btn_save_png = Button(ax_save_png, 'Save as PNG', color='#cccccc', hovercolor='#aaaaaa')
+        btn_save_json = Button(ax_save_json, 'Save as JSON', color='#cccccc', hovercolor='#aaaaaa')
+
+        # 5. Add Import JSON button
+        ax_import_json = plt.axes([0.71, 0.03, 0.18, 0.06])
+        btn_import_json = Button(ax_import_json, 'Import JSON', color='#cccccc', hovercolor='#aaaaaa')
+
+        def import_json(event):
+            root = tk.Tk()
+            root.withdraw()
+            filename = filedialog.askopenfilename(
+                title="Select map JSON file",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            if filename:
+                self.import_from_json(filename)
+                plt.close(fig)
+                self.draw_graphical_map()  # Redraw with the imported map
+
+        
+
+        # 6. Connect the buttons to their callback functions
+        btn_save_png.on_clicked(save_png)
+        btn_save_json.on_clicked(save_json)
+        btn_import_json.on_clicked(import_json)
         plt.show()
         
   
-        
-    def get_legend_labels(self):
+    @staticmethod    
+    def get_legend_labels():
         """Returns a dictionary of labels for the legend."""
         return {
             'D': 'Deep Water', 'R': 'River', 'S': 'Sandy Beach',
             'g': 'Grassland', 'p': 'Plains', 'f': 'Forested Plains',
             'F': 'Dense Forest', 'H': 'Highlands', 'M': 'Rocky Mountain',
-            'C': 'Cliff', 'P': 'Snowy Peak', 'K': 'Castle'
+            'C': 'Cliff', 'P': 'Snowy Peak', 'K': 'Castle', 'W': 'Road', 
+            'E': 'Exit', 'X': 'Impassable'
         }
 
     def get_node_details(self, x, y):
@@ -412,24 +564,119 @@ class MapGenerator:
         if 0 <= x < self.width and 0 <= y < self.height:
             return self.grid[y][x]
         return "Coordinates out of bounds."
+    
+    def export_to_json(self, filename="world_map.json"):
+        """Exports the generated map data to a JSON file."""
+        map_data = {
+            "map_metadata": {
+                "width": self.width,
+                "height": self.height,
+                "seed": self.seed
+            },
+            "nodes": []
+        }
+
+        for y in range(self.height):
+            row = []
+            for x in range(self.width):
+                node = self.grid[y][x]
+                # Basic connections (can be enhanced)
+                connections = {}
+                for dx, dy, name in [(0,-1,"N"), (1,0,"E"), (0,1,"S"), (-1,0,"W"), (1,-1,"NE"), (1,1,"SE"), (-1,1,"SW"), (-1,-1,"NW")]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < self.width and 0 <= ny < self.height:
+                        connections[name] = (nx, ny)
+
+                node_data = {
+                    "coords": {"x": x, "y": y},
+                    "terrain": {
+                        "type": node.terrain_type,
+                        "label": node.terrain_label,
+                        "elevation": round(node.elevation, 2),
+                    },
+                    "description_base": f"A {node.terrain_label.lower()} area.",
+                    "connections": connections,
+                    "gameplay": {
+                        "visited": False,
+                        "difficulty_class": 10 # Placeholder DC
+                    }
+                }
+                row.append(node_data)
+            map_data["nodes"].append(row)
+
+        with open(filename, 'w') as f:
+            json.dump(map_data, f, indent=2)
+        print(f"Map data successfully exported to {filename}")
+
+    def import_from_json(self, filename):
+        """Loads map data from a JSON file and updates the grid."""
+        with open(filename, 'r') as f:
+            data = json.load(f)
+        self.width = data["map_metadata"]["width"]
+        self.height = data["map_metadata"]["height"]
+        self.seed = data["map_metadata"].get("seed", 0)
+        self.grid = [[Node(x, y) for x in range(self.width)] for y in range(self.height)]
+        for y, row in enumerate(data["nodes"]):
+            for x, node_data in enumerate(row):
+                node = self.grid[y][x]
+                node.terrain_type = node_data["terrain"]["type"]
+                node.terrain_label = node_data["terrain"]["label"]
+                node.elevation = node_data["terrain"].get("elevation", 0.0)
+
+    
+
+def verify_world_map_json(filename="world_map.json"):
+    import json
+    data = json.load(open(filename))
+    width = data["map_metadata"]["width"]
+    height = data["map_metadata"]["height"]
+    nodes = data["nodes"]
+    errors = []
+    for y, row in enumerate(nodes):
+        for x, node in enumerate(row):
+            cx, cy = node["coords"]["x"], node["coords"]["y"]
+            if cx != x or cy != y:
+                errors.append(f"Coord mismatch at ({x},{y}): got ({cx},{cy})")
+            ttype = node["terrain"]["type"]
+            if ttype not in MapGenerator.get_legend_labels():
+                errors.append(f"Unknown terrain type '{ttype}' at ({x},{y})")
+            if not node["terrain"]["label"]:
+                errors.append(f"Missing label at ({x},{y})")
+            for dir, (nx, ny) in node["connections"].items():
+                if not (0 <= nx < width and 0 <= ny < height):
+                    errors.append(f"Invalid connection {dir} from ({x},{y}) to ({nx},{ny})")
+            if "visited" not in node["gameplay"] or "difficulty_class" not in node["gameplay"]:
+                errors.append(f"Missing gameplay fields at ({x},{y})")
+    if errors:
+        print("Validation errors found:")
+        for err in errors:
+            print(err)
+    else:
+        print("All nodes in world_map.json are valid.")
+
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Create and generate the map
-    generator = MapGenerator(width=100, height=100)
-    world_grid = generator.generate_world()
-    
-    # Add this line to generate the castle region
-    generator.add_castle_region(size=100, terrain_types=('p', 'g'))
+    if len(sys.argv) > 1 and sys.argv[1] == "verify":
+        verify_world_map_json()
+    else:
+        # Create and generate the map
+        generator = MapGenerator(width=100, height=100)
+        world_grid = generator.generate_world()
+        
+        # Add this line to generate the castle region
+        generator.add_castle_region(size=100, terrain_types=('p', 'g'))
+        # Example: place first exit at (1, 75)
+        generator.add_exits_and_road(exit1=(1, 75))
 
-    # --- Display the results ---
-    # 1. Simple console output
-    generator.draw_text_map()
-    
-    # 2. Detailed query of a specific node
-    print("\n--- Node Details ---")
-    node_info = generator.get_node_details(50, 50)
-    print(node_info)
+        # --- Display the results ---
+        # 1. Simple console output
+        generator.draw_text_map()
+        
+        # 2. Detailed query of a specific node
+        print("\n--- Node Details ---")
+        node_info = generator.get_node_details(50, 50)
+        print(node_info)
 
-    # 3. Graphical map (most informative)
-    generator.draw_graphical_map()
+        # 3. Graphical map (most informative)
+        generator.draw_graphical_map()

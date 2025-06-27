@@ -1,0 +1,8 @@
+flask
+numpy
+matplotlib
+scipy
+noise
+python-dotenv
+google-generativeai
+openai
