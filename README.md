@@ -15,8 +15,6 @@
 
 ---
 
-![RealmGen AI Banner](https://github.com/user-attachments/assets/65eb2f28-ade4-45ce-b722-a91fc53b5d6a)
-
 
 RealmGen AI combines classic procedural map generation with modern LLMs to create richly described, interactive fantasy worlds. Generate vast terrains, populate them with AI-crafted descriptions, and explore through an intuitive web interface.
 
@@ -86,6 +84,15 @@ RealmGen AI combines classic procedural map generation with modern LLMs to creat
    - Click nodes to view/edit descriptions
    - Start the crawler to auto-populate the map with LLM-generated text
    - Use the building generator for castles and interiors
+  
+  
+## 🎮 Demo
+
+```
+A well-worn dirt road cuts through the landscape, bordered by wildflowers and grass. Sunlight filters through the canopy above, casting shifting shadows on the path below.
+To the north and south, the road connects with the undulating woodland, where tall trees house fluttering birds and the air carries scents of damp bark and moss. A peculiar white mushroom glistens with moisture among the undergrowth, while patches of loose stones add texture to the forest floor.
+In the background, beyond the trees, faint hints of deep waters can be detected—waves murmuring softly against a distant sandy beach. This creates a dynamic atmosphere that connects the road to the expansive world that lies just beyond the immediate embrace of the towering woods.
+![MWpic2](https://github.com/MLBott/RealmGen-AI/blob/main/node_editor_and_crawler_example.gif)
 
 ## 📂 Project Structure
 
