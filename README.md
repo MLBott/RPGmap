@@ -80,7 +80,21 @@ RealmGen AI combines classic procedural map generation with modern LLMs to creat
    ```
    Then open [http://localhost:5001](http://localhost:5001) in your browser.
 
-5. **Explore and edit:**  
+5. **Run the map generator script:**
+   ```bash
+    python map_generator.py
+   ```
+   Rerun until you find a map you like. Export as json via button at bottom.
+
+6. **Run LLM crawler to create descriptons**
+   ```
+   python app.py
+   ```
+   The crawlers can take 2+ hours on a 100x100 node map. The map size can be decreased in the python code.
+   If the crawlers stall, restart the app.
+
+8. **Explore and edit:**  
+    
    - Click nodes to view/edit descriptions
    - Start the crawler to auto-populate the map with LLM-generated text
    - Use the building generator for castles and interiors
@@ -98,6 +112,13 @@ In the background, beyond the trees, *faint hints of deep waters can be detected
 [Available exits: N, W, S, SE]
 
 ![MWpic2](https://github.com/MLBott/RealmGen-AI/blob/main/node_editor_and_crawler_example.gif)
+
+## 📂 Soon
+
+- Adjust # of llm crawlers for faster node descriptions and map completion
+- More GUI controls for tweaking
+- Add Claude, Openrouter, Ollama as LLM options.
+
 
 ## 📂 Project Structure
 
