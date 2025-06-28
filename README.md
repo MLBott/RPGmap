@@ -131,11 +131,12 @@ To run the Building Constructor:
 <img src="https://github.com/MLBott/RealmGen-AI/blob/main/building_constructor_example.png" width="700" height="400">
 
 
-## 📂 Soon
+## 📂 Planned
 
 - Adjust # of llm crawlers for faster node descriptions and map completion
 - More GUI controls for tweaking
-- Add Claude, Openrouter, Ollama as LLM options.
+- Add Claude, Openrouter, Ollama as LLM options
+- Add option for multiple floors for buildings
 
 
 ## 📂 Project Structure
