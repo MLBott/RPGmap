@@ -44,7 +44,7 @@ RealmGen AI combines classic procedural map generation with modern LLMs to creat
   RPGmap uniquely combines classic procedural map generation with modern LLMs to create not just maps, but living, richly described worlds.
 
 - **Collaborative & Extensible**  
-  The world map is a simple JSON file that is exportable and importable into other projects (like ![Moodweaver](https://github.com/MLBott/Moodweaver) as a map for the LLM chat interface).
+  The world map is a simple JSON file that is exportable and importable into other projects (like [Moodweaver](https://github.com/MLBott/Moodweaver) as a map for the LLM chat interface).
 
 - **Automates Tedious Worldbuilding**  
   The crawler and LLM integration automate the creation of hundreds or thousands of unique, context-sensitive location descriptions—saving hours of manual work.
