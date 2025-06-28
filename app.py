@@ -19,7 +19,7 @@ WORLD_MAP_FILE = 'world_map.json'
 # The master prompt template. Placeholders will be filled in by the build_detailed_prompt function.
 PROMPT_TEMPLATE = (
     "You are a creative, detail-oriented world-building assistant for a fantasy RPG.\n"
-    "Generate an immersive, third-person description for a map node as if the environment is being closely examined.\n\n"
+    "Generate an immersive, third-person description for a map node as if the environment is being closely examined. 80 words MAX.\n\n"
     "## STYLE & TONE\n"
     "- **Perspective:** Describe the node from a close-to-the-ground, spatially immediate perspective. Let the environment speak for itself through texture, orientation, and subtle cues.\n"
     "- **Narration:** Avoid first-person ('I see...') or second-person ('You see...') language entirely. The tone should be objective and descriptive.\n"
@@ -30,8 +30,9 @@ PROMPT_TEMPLATE = (
     "- **Novelty:** Add some unique or novel detail to the core target node to make it memorable.\n"
     "- **Context:** Use the surrounding rings of neighbors for environmental context (e.g., if a forest is next door, mention the sounds of birds or the scent of pine).\n"
     "- **Ring 3 Awareness:** The outermost ring (Ring 3) should only influence the description if it contains large, unmissable features like mountains on the horizon.\n"
-    "- **Character Spotlights (Optional):** If it feels natural, optionally include one or two 'character spotlights'—small, interesting details that a character might notice. For example: 'a curiously shaped mushroom', 'a patch of loose scree', or 'an old, moss-covered stone marker'.\n\n"
-    "- **Building Nodes** Castle, etc, nodes are three main types: exterior wall, interior wall, and room spaces. Exterior Walls always impassable to interior nodes, description is always from pov outside that incorporates env of adjacent outside non-castle/building nodes."
+    "- **Character Spotlights (Optional):** If it feels natural, optionally include one or two 'character spotlights'—small, interesting details that a character might notice.\n"
+    "- **Building Nodes** Castle, K, nodes are three main types: exterior wall, interior wall, and castle spaces. Exterior Walls always impassable to castle spaces, description is always from pov outside that incorporates env of adjacent outside non-castle/building nodes.\n"
+    "- **Description Style** For Castle nodes, warm comforting regal game of thrones theme, with lots of detail clutter, for a castle that has been vacant for a decade but without focusing on the vacancy. Focus on the logical spatial structure, layout, design, and function.\n\n"
     "---"
     "## TARGET NODE JSON\n"
     "{target_node_json}\n\n"
@@ -90,10 +91,8 @@ crawler_state = {
     "executor": None
 }
 
-# Separate locks for different operations to prevent deadlocks
-file_lock = threading.RLock()  # For file I/O operations
-state_lock = threading.RLock()  # For crawler state operations
-crawler_lock = threading.Lock()
+# Single lock to prevent deadlocks
+global_lock = threading.RLock()
 
 # --- THREAD-SAFE FILE OPERATIONS ---
 
@@ -102,7 +101,7 @@ def load_map_data():
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            with file_lock:
+            with global_lock:
                 with open(WORLD_MAP_FILE, 'r', encoding='utf-8') as f:
                     content = f.read()
                     if not content.strip():
@@ -122,7 +121,7 @@ def load_map_data():
 def save_map_data(data):
     """Saves the world map back to the JSON file with atomic write."""
     try:
-        with file_lock:
+        with global_lock:
             # Write to a temporary file first, then rename (atomic operation)
             temp_file = WORLD_MAP_FILE + '.tmp'
             with open(temp_file, 'w', encoding='utf-8') as f:
@@ -146,9 +145,8 @@ def save_map_data(data):
 # --- HELPER FUNCTIONS ---
 
 def is_node_default(node):
-    """Checks if a node has the default, un-generated description."""
-    return node["description_base"].strip().lower().startswith("a ") and \
-           node["description_base"].strip().lower().endswith(" area.")
+    """Checks if a node is marked for LLM generation (ends with '@area')."""
+    return node["description_base"].strip().lower().endswith("@area")
 
 def build_detailed_prompt(prompt_template, node_context):
     """Builds the comprehensive prompt by filling in a template."""
@@ -199,31 +197,36 @@ def get_node_context_data(x, y, map_data):
 
 def generate_description_with_llm(prompt, provider):
     """Generates a description using the selected LLM provider."""
-    if provider == 'openai' and openai_client:
-        print("Generating with OpenAI...")
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a creative, detail-oriented world-building assistant for a fantasy RPG."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-        
-    elif provider == 'gemini' and gemini_model:
-        print("Generating with Gemini...")
-        response = gemini_model.generate_content(prompt)
-        return response.text.strip()
-        
-    else:
-        raise ValueError(f"Provider '{provider}' is not available or configured.")
+    try:
+        if provider == 'openai' and openai_client:
+            print("Generating with OpenAI...")
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a creative, detail-oriented world-building assistant for a fantasy RPG."},
+                    {"role": "user", "content": prompt}
+                ],
+                timeout=30  # Add timeout
+            )
+            return response.choices[0].message.content.strip()
+            
+        elif provider == 'gemini' and gemini_model:
+            print("Generating with Gemini...")
+            response = gemini_model.generate_content(prompt)
+            return response.text.strip()
+            
+        else:
+            raise ValueError(f"Provider '{provider}' is not available or configured.")
+    except Exception as e:
+        print(f"Error generating description: {e}")
+        raise
 
 # --- WORKER THREAD FUNCTION ---
 
 def process_node_worker(x, y, prompt_template):
     """
     This is the function that each worker thread will execute.
-    It processes a single node and RETURNS its neighbors. It no longer modifies global state.
+    It processes a single node and RETURNS its neighbors.
     """
     node_id = (x, y)
     print(f"Worker: Starting node {node_id}...")
@@ -234,9 +237,9 @@ def process_node_worker(x, y, prompt_template):
         prompt = build_detailed_prompt(prompt_template, context)
         
         # --- Make the API call ---
-        with crawler_lock:
-            # We still need a lock around the API call if the client object is not thread-safe
+        with global_lock:
             selected_provider = crawler_state.get("provider", "gemini")
+        
         new_description = generate_description_with_llm(prompt, selected_provider)
         
         # --- Save the result ---
@@ -254,101 +257,129 @@ def process_node_worker(x, y, prompt_template):
 
     except Exception as e:
         print(f"Worker: ERROR on node {node_id}: {e}")
-        return node_id, [] # Return empty list on failure
+        return node_id, []  # Return empty list on failure
 
 # --- CRAWLER MANAGER ---
 
-# In app.py, replace this function:
-
 def crawler_manager(prompt_template):
     """
-    The main control loop that now centrally manages the queue and work distribution.
+    The main control loop that centrally manages the queue and work distribution.
     """
-    with crawler_lock:
-        print("Manager: Initializing...")
-        map_data = load_map_data()
-        crawler_state["todo_list"] = {
-            (x, y) for y, row in enumerate(map_data['nodes'])
-            for x, node in enumerate(row) if is_node_default(node)
-        }
-        crawler_state["total_nodes"] = len(map_data['nodes']) * len(map_data['nodes'][0])
-        crawler_state["completed_nodes"] = crawler_state["total_nodes"] - len(crawler_state["todo_list"])
-        print("Manager: Initialization complete.")
+    print("Manager: Initializing...")
+    
+    try:
+        with global_lock:
+            map_data = load_map_data()
+            crawler_state["todo_list"] = {
+                (x, y) for y, row in enumerate(map_data['nodes'])
+                for x, node in enumerate(row) if is_node_default(node)
+            }
+            crawler_state["total_nodes"] = len(map_data['nodes']) * len(map_data['nodes'][0])
+            crawler_state["completed_nodes"] = crawler_state["total_nodes"] - len(crawler_state["todo_list"])
+            print(f"Manager: Found {len(crawler_state['todo_list'])} nodes to process")
 
-    MAX_WORKERS = 2
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        active_futures = set()
-
-        while True:
-            with crawler_lock:
-                # Check for stop signal
-                if not crawler_state["is_running"]:
-                    print("Manager: Stop signal received. Shutting down...")
-                    # Attempt to cancel futures that haven't started
-                    for f in active_futures:
-                        f.cancel()
-                    executor.shutdown(wait=True)
+        MAX_WORKERS = 4  # Reduced from 6 to be more conservative
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            active_futures = {}  # Map future to node_id for easier tracking
+            
+            while True:
+                should_stop = False
+                
+                with global_lock:
+                    # Check for stop signal
+                    if not crawler_state["is_running"]:
+                        print("Manager: Stop signal received. Shutting down...")
+                        should_stop = True
+                
+                if should_stop:
+                    # Cancel pending futures and wait for completion
+                    for future in active_futures:
+                        future.cancel()
+                    # Wait for all futures to complete or be cancelled
+                    concurrent.futures.wait(active_futures.keys(), timeout=30)
                     break
 
-                # Submit new jobs from the queue if there's capacity
-                while len(active_futures) < MAX_WORKERS:
-                    node_to_process = None
-                    if crawler_state["processing_queue"]:
-                        node_to_process = crawler_state["processing_queue"].popleft()
-                    elif crawler_state["todo_list"]:
-                        node_to_process = crawler_state["todo_list"].pop()
-                        print(f"Manager: Starting new island at {node_to_process}")
-                    
+                # Submit new jobs if there's capacity
+                with global_lock:
                     while len(active_futures) < MAX_WORKERS:
                         node_to_process = None
+                        
+                        # First try the processing queue (neighbors of completed nodes)
                         if crawler_state["processing_queue"]:
                             node_to_process = crawler_state["processing_queue"].popleft()
+                        # Then try starting a new island from todo_list
                         elif crawler_state["todo_list"]:
-                            node_to_process = next(iter(crawler_state["todo_list"]))  # Peek, don't pop yet
+                            node_to_process = next(iter(crawler_state["todo_list"]))
                             print(f"Manager: Starting new island at {node_to_process}")
-
-                        if node_to_process:
-                            # Ensure we don't re-process something
-                            if node_to_process in crawler_state["todo_list"]:
-                                future = executor.submit(process_node_worker, node_to_process[0], node_to_process[1], prompt_template)
-                                active_futures.add(future)
-                                crawler_state["active_workers"].add(node_to_process)
-                                crawler_state["todo_list"].discard(node_to_process)  # Remove after submitting
-                            else:
-                                continue # Skip if it was already processed
-                        else:
-                            break # No more work to submit right now
-
-            # If there's no work left to start and no active workers, we are done.
-            if not active_futures and not crawler_state["todo_list"]:
-                print("Manager: All work completed. Shutting down.")
-                with crawler_lock:
-                    crawler_state["is_running"] = False
-                break
-
-            # Wait for the next future to complete.
-            # Use a timeout to allow the main loop to check the is_running flag periodically.
-            try:
-                for future in concurrent.futures.as_completed(active_futures, timeout=1.0):
-                    completed_node, neighbors = future.result()
-                    
-                    # This future is done, remove it from the active set
-                    active_futures.remove(future)
-
-                    with crawler_lock:
-                        crawler_state["completed_nodes"] += 1
-                        crawler_state["active_workers"].discard(completed_node)
                         
-                        # Add valid, unprocessed neighbors to the queue
-                        for neighbor_id in neighbors:
-                            if neighbor_id in crawler_state["todo_list"]:
-                                crawler_state["processing_queue"].append(neighbor_id)
-                                # By removing it here, we ensure it's not picked up by the "island hopper"
-                                crawler_state["todo_list"].remove(neighbor_id)
-                    break # Process one result per loop iteration
-            except concurrent.futures.TimeoutError:
-                # No futures completed in the last second, just loop again to check is_running
-                continue
+                        if node_to_process and node_to_process in crawler_state["todo_list"]:
+                            # Submit the job
+                            future = executor.submit(process_node_worker, node_to_process[0], node_to_process[1], prompt_template)
+                            active_futures[future] = node_to_process
+                            crawler_state["active_workers"].add(node_to_process)
+                            crawler_state["todo_list"].discard(node_to_process)
+                            print(f"Manager: Submitted job for {node_to_process}")
+                        else:
+                            break  # No more work to submit right now
+
+                # Check if we're completely done
+                if not active_futures and not crawler_state["todo_list"]:
+                    print("Manager: All work completed. Shutting down.")
+                    with global_lock:
+                        crawler_state["is_running"] = False
+                    break
+
+                # Wait for at least one future to complete
+                if active_futures:
+                    try:
+                        completed_futures = []
+                        for future in concurrent.futures.as_completed(active_futures.keys(), timeout=2.0):
+                            completed_futures.append(future)
+                            # Only process one at a time to avoid blocking too long
+                            break
+                        
+                        for future in completed_futures:
+                            completed_node = active_futures[future]
+                            del active_futures[future]
+                            
+                            try:
+                                node_id, neighbors = future.result(timeout=1)
+                                
+                                with global_lock:
+                                    crawler_state["completed_nodes"] += 1
+                                    crawler_state["active_workers"].discard(completed_node)
+                                    
+                                    # Add valid, unprocessed neighbors to the processing queue
+                                    for neighbor_id in neighbors:
+                                        if neighbor_id in crawler_state["todo_list"]:
+                                            crawler_state["processing_queue"].append(neighbor_id)
+                                            crawler_state["todo_list"].discard(neighbor_id)
+                                    
+                                    print(f"Manager: Completed {node_id}, added {len([n for n in neighbors if n in crawler_state['todo_list']])} neighbors to queue")
+                                    print(f"Manager: Progress - {crawler_state['completed_nodes']}/{crawler_state['total_nodes']} nodes, {len(crawler_state['todo_list'])} remaining")
+                                    
+                            except Exception as e:
+                                print(f"Manager: Error processing result for {completed_node}: {e}")
+                                with global_lock:
+                                    crawler_state["active_workers"].discard(completed_node)
+                        
+                    except concurrent.futures.TimeoutError:
+                        # No futures completed in timeout period, continue loop
+                        continue
+                else:
+                    # No active futures, sleep briefly to avoid busy waiting
+                    time.sleep(0.1)
+
+    except Exception as e:
+        print(f"Manager: Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        with global_lock:
+            crawler_state["is_running"] = False
+            crawler_state["active_workers"].clear()
+        print("Manager: Crawler stopped")
 
 # --- FLASK API ENDPOINTS ---
 
@@ -390,33 +421,49 @@ def update_node():
 
 @app.route('/api/crawler/start', methods=['POST'])
 def start_crawler():
-    data = request.json
-    provider = data.get('provider', 'gemini')
-    # Get the user-edited prompt from the request, fall back to the master template
-    prompt_template = data.get('prompt', PROMPT_TEMPLATE)
+    try:
+        data = request.json or {}
+        provider = data.get('provider', 'gemini')
+        prompt_template = data.get('prompt', PROMPT_TEMPLATE)
 
-    # (Provider check is unchanged)
-    # ...
+        # Validate provider
+        if provider == 'openai' and not openai_client:
+            return jsonify({"error": "OpenAI client not configured"}), 400
+        elif provider == 'gemini' and not gemini_model:
+            return jsonify({"error": "Gemini model not configured"}), 400
 
-    with crawler_lock:
-        if crawler_state["is_running"]:
-            return jsonify({"status": "Already running."})
+        with global_lock:
+            if crawler_state["is_running"]:
+                return jsonify({"status": "Already running."})
 
-        print(f"API: Received start command for provider: {provider}")
-        crawler_state["provider"] = provider
-        crawler_state["is_running"] = True
-        
-        if not crawler_state["thread_object"] or not crawler_state["thread_object"].is_alive():
-            # Pass the prompt_template to the manager thread
-            crawler_state["thread_object"] = threading.Thread(target=crawler_manager, args=(prompt_template,), daemon=True)
+            print(f"API: Received start command for provider: {provider}")
+            crawler_state["provider"] = provider
+            crawler_state["is_running"] = True
+            
+            # Clean up any old thread
+            if crawler_state["thread_object"] and crawler_state["thread_object"].is_alive():
+                print("Warning: Old thread still alive, waiting for it to finish...")
+                crawler_state["thread_object"].join(timeout=5)
+            
+            # Start new thread
+            crawler_state["thread_object"] = threading.Thread(
+                target=crawler_manager, 
+                args=(prompt_template,), 
+                daemon=True,
+                name="CrawlerManager"
+            )
             crawler_state["thread_object"].start()
 
-        return jsonify({"status": "Crawler start command received."})
+        return jsonify({"status": "Crawler started successfully."})
+    
+    except Exception as e:
+        print(f"Error starting crawler: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/crawler/stop', methods=['POST'])
 def stop_crawler():
     try:
-        with state_lock:
+        with global_lock:
             if not crawler_state["is_running"]:
                 return jsonify({"status": "Already stopped."})
             
@@ -430,17 +477,19 @@ def stop_crawler():
 @app.route('/api/crawler/status', methods=['GET'])
 def get_crawler_status():
     try:
-        with state_lock:
+        with global_lock:
             status = {
                 "is_running": crawler_state["is_running"],
                 "completed_nodes": crawler_state["completed_nodes"],
                 "total_nodes": crawler_state["total_nodes"],
                 "active_workers": list(crawler_state["active_workers"]),
                 "queue_size": len(crawler_state["processing_queue"]),
-                "todo_count": len(crawler_state["todo_list"])
+                "todo_count": len(crawler_state["todo_list"]),
+                "thread_alive": crawler_state["thread_object"] is not None and crawler_state["thread_object"].is_alive() if crawler_state["thread_object"] else False
             }
         return jsonify(status)
     except Exception as e:
+        print(f"Error getting crawler status: {e}")
         return jsonify({"error": str(e)}), 500
     
 @app.route('/api/prompt', methods=['GET'])
@@ -448,7 +497,43 @@ def get_prompt_template():
     """Endpoint to provide the master prompt template to the frontend."""
     return jsonify({"prompt_template": PROMPT_TEMPLATE})
 
+@app.route('/api/mark_llm', methods=['POST'])
+def mark_llm():
+    try:
+        x = int(request.args.get('x'))
+        y = int(request.args.get('y'))
+        map_data = load_map_data()
+        node = map_data['nodes'][y][x]
+        desc = node.get("description_base", "")
+        if not desc.strip().lower().endswith("@area"):
+            node["description_base"] = desc.rstrip('.') + " @area"
+            save_map_data(map_data)
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Already marked"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/update_node_type', methods=['POST'])
+def update_node_type():
+    try:
+        data = request.json
+        map_data = load_map_data()
+        map_data['nodes'][data['y']][data['x']]['terrain']['type'] = data['type']
+        save_map_data(map_data)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Add error handler for the entire app
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"Unhandled exception: {e}")
+    import traceback
+    traceback.print_exc()
+    return jsonify({"error": "Internal server error"}), 500
+
 # --- MAIN EXECUTION ---
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001, use_reloader=False)
+    print("Starting Flask server...")
+    app.run(debug=True, port=5001, use_reloader=False, threaded=True)

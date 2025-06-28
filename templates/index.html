@@ -6,8 +6,25 @@
     <style>
         body { font-family: sans-serif; display: flex; }
         #map-container { position: relative; }
-        #map-grid { display: grid; grid-template-columns: repeat(100, 6px); gap: 1px; border: 1px solid #ccc; }
-        .node { width: 6px; height: 6px; cursor: pointer; }
+        #map-grid { 
+            display: grid; 
+            grid-template-columns: repeat(100, 12px); 
+            gap: 1px; 
+            border: 1px solid #ccc;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+        .node { 
+            width: 12px; 
+            height: 12px; 
+            cursor: pointer; 
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
         #editor { margin-left: 20px; width: 600px; }
         #llm-prompt { 
             background-color: #f0f0f0; padding: 10px; border-radius: 5px; white-space: pre-wrap;
@@ -32,12 +49,20 @@
 <div id="editor">
     <h2>Manual Node Editor</h2>
     <div id="node-info">Click a node on the map to edit it.</div>
+    <h3>Current Node Context:</h3>
+    <div id="llm-prompt">Click a node to see its context...</div>
     <hr>
     <h3>LLM Prompt Template (Editable for Crawler)</h3>
     <textarea id="prompt-editor" rows="15" style="width: 100%; white-space: pre-wrap;"></textarea>
     <h3>Manual LLM Response:</h3>
     <textarea id="llm-response"></textarea>
     <button id="update-button" disabled>Update Node Manually</button>
+    <div>
+        <label for="terrain-type-input">Terrain Type:</label>
+        <input id="terrain-type-input" type="text" maxlength="2" style="width:40px;">
+        <button id="update-type-btn" disabled>Update Type</button>
+    </div>
+    <button id="mark-llm-btn" disabled>Mark for LLM Crawl</button>
     
     <div id="crawler-controls">
         <h2>Automated Crawler</h2>
@@ -60,6 +85,7 @@
     const llmPrompt = document.getElementById('llm-prompt');
     const llmResponse = document.getElementById('llm-response');
     const updateButton = document.getElementById('update-button');
+    const markLLMBtn = document.getElementById('mark-llm-btn'); // Added this missing reference
     const crawlerStatus = document.getElementById('crawler-status');
     const startCrawlerBtn = document.getElementById('start-crawler-btn');
     const stopCrawlerBtn = document.getElementById('stop-crawler-btn');
@@ -68,7 +94,6 @@
 
     // --- STATE ---
     let currentManualCoords = null;
-    // We now track a Set of DOM elements that are currently flashing
     let currentlyFlashingNodes = new Set();
     let isFogOn = false;
     let mapDataCache = null;
@@ -93,7 +118,12 @@
                 cell.id = `node-${x}-${y}`;
                 cell.style.backgroundColor = colorMap[node.terrain.type] || '#fff';
                 cell.title = `(${x}, ${y}) - ${node.terrain.label}`;
-                cell.addEventListener('click', () => handleNodeClick(x, y));
+                cell.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log(`Cell clicked: (${x}, ${y})`);
+                    handleNodeClick(x, y);
+                });
                 mapGrid.appendChild(cell);
             });
         });
@@ -107,34 +137,144 @@
         setInterval(fetchCrawlerStatus, 1500);
     });
 
-    // 2. Manual Editor Logic
+    // 2. Manual Editor Logic - FIXED
     function handleNodeClick(x, y) {
+        console.log(`Node clicked: (${x}, ${y})`); // Debug log
         llmPrompt.innerText = "Loading context...";
-        fetch(`/api/node_context?x=${x}&y=${y}`).then(res => res.json()).then(context => {
-            currentManualCoords = {x, y};
-            const target = context.target_node;
-            nodeInfo.innerHTML = `<b>Coords:</b> (${x},${y}) | <b>Terrain:</b> ${target.terrain.label}`;
-            llmResponse.value = target.description_base;
-            updateButton.disabled = false;
-            // Build and set the detailed prompt
-            let promptText = `...`; // (Full prompt building logic from previous step)
-            llmPrompt.innerText = `Generate an immersive RPG description for a location with these properties: ${JSON.stringify(target, null, 2)}...`; // Simplified for brevity
-        });
+        
+        fetch(`/api/node_context?x=${x}&y=${y}`)
+            .then(res => res.json())
+            .then(context => {
+                if (context.error) {
+                    nodeInfo.innerHTML = `<b>Error:</b> ${context.error}`;
+                    llmResponse.value = '';
+                    updateButton.disabled = true;
+                    markLLMBtn.disabled = true;
+                    return;
+                }
 
+                const target = context.target_node;
+
+                const terrainTypeInput = document.getElementById('terrain-type-input');
+                const updateTypeBtn = document.getElementById('update-type-btn');
+
+                // In handleNodeClick, after setting nodeInfo:
+                terrainTypeInput.value = target.terrain.type || '';
+                updateTypeBtn.disabled = false;
+
+                // Update button logic
+                updateTypeBtn.addEventListener('click', () => {
+                    if (!currentManualCoords) return;
+                    const {x, y} = currentManualCoords;
+                    const newType = terrainTypeInput.value.trim();
+                    if (!newType) return alert("Type cannot be empty.");
+                    fetch('/api/update_node_type', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ x, y, type: newType })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Node type updated!');
+                            // Optionally refresh node display
+                            handleNodeClick(x, y);
+                        } else {
+                            alert('Error: ' + (data.error || 'Unknown error'));
+                        }
+                    });
+                });
+                
+                currentManualCoords = {x, y};
+                
+                nodeInfo.innerHTML = `<b>Coords:</b> (${x},${y}) | <b>Terrain:</b> ${target.terrain.label}`;
+                llmResponse.value = target.description_base;
+                updateButton.disabled = false;
+                markLLMBtn.disabled = false;
+                
+                // Build detailed prompt context
+                const ring1_text = context.ring1.map(n => `- (${n.coords.x},${n.coords.y}): ${n.description}`).join('\n');
+                const ring2_text = context.ring2.map(n => `- (${n.coords.x},${n.coords.y}): ${n.summary || 'N/A'}`).join('\n');
+                const ring3_text = context.ring3.map(n => `- (${n.coords.x},${n.coords.y}): ${n.label || 'N/A'}`).join('\n');
+                
+                const detailedPrompt = `TARGET NODE JSON:\n${JSON.stringify(target, null, 2)}\n\nCONTEXT: SURROUNDING NEIGHBORS\n\nRing 1 (Full Detail):\n${ring1_text}\n\nRing 2 (Summary):\n${ring2_text}\n\nRing 3 (Brief):\n${ring3_text}`;
+                
+                llmPrompt.innerText = detailedPrompt;
+            })
+            .catch(err => {
+                console.error('Error fetching node context:', err);
+                nodeInfo.innerHTML = `<b>Error:</b> ${err}`;
+                llmResponse.value = '';
+                updateButton.disabled = true;
+                markLLMBtn.disabled = true;
+            });
     }
+
+    // 3. Update Button Event Listener - FIXED
     updateButton.addEventListener('click', () => {
-        // (Manual update logic remains the same)
+        if (!currentManualCoords) return;
+        
+        const {x, y} = currentManualCoords;
+        const newDescription = llmResponse.value;
+        
+        fetch('/api/update_node', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                x: x,
+                y: y,
+                description: newDescription
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert('Node updated successfully!');
+                // Update the cached data
+                if (mapDataCache && mapDataCache[y] && mapDataCache[y][x]) {
+                    mapDataCache[y][x].description_base = newDescription;
+                }
+                // Refresh fog of war if enabled
+                if (isFogOn) applyFogOfWar();
+            } else {
+                alert('Error updating node: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => {
+            console.error('Error updating node:', err);
+            alert('Error updating node: ' + err);
+        });
     });
 
-    // 3. Crawler Control Logic
+    // 4. Mark LLM Button Event Listener - FIXED
+    markLLMBtn.addEventListener('click', () => {
+        if (!currentManualCoords) return;
+        const {x, y} = currentManualCoords;
+        fetch(`/api/mark_llm?x=${x}&y=${y}`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success){
+                alert("Node marked for LLM crawling.");
+                // Refresh the node display
+                handleNodeClick(x, y);
+            } else {
+                alert("Failed to mark node: " + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => {
+            console.error('Error marking node:', err);
+            alert('Error marking node: ' + err);
+        });
+    });
+
+    // 5. Crawler Control Logic
     startCrawlerBtn.addEventListener('click', () => {
         const selectedProvider = document.getElementById('llm-provider').value;
-        const editedPrompt = promptEditor.value; // <-- GET the edited prompt text
+        const editedPrompt = promptEditor.value;
 
         fetch('/api/crawler/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            // SEND the selected provider AND the edited prompt
             body: JSON.stringify({ 
                 provider: selectedProvider,
                 prompt: editedPrompt
@@ -147,33 +287,28 @@
             }
         });
     });
+    
     stopCrawlerBtn.addEventListener('click', () => fetch('/api/crawler/stop', {method: 'POST'}));
 
-    // 4. Status Polling and Visualization
+    // 6. Status Polling and Visualization
     function fetchCrawlerStatus() {
         fetch('/api/crawler/status').then(res => res.json()).then(status => {
-            // Update status text (this part is the same)
             let statusText = `Status: ${status.is_running ? 'Running' : 'Idle'}`;
             if (status.total_nodes > 0) {
                 statusText += ` | Completed: ${status.completed_nodes} / ${status.total_nodes}`;
             }
             crawlerStatus.innerText = statusText;
 
-            // --- NEW: LOGIC TO HIGHLIGHT MULTIPLE WORKERS ---
-
-            // Create a Set of node IDs that should be flashing now.
             const newFlashingIds = new Set(
                 status.active_workers.map(([x, y]) => `node-${x}-${y}`)
             );
 
-            // 1. Turn off flashing for nodes that are no longer active.
             for (const nodeElement of currentlyFlashingNodes) {
                 if (!newFlashingIds.has(nodeElement.id)) {
                     nodeElement.classList.remove('flashing-node');
                 }
             }
 
-            // 2. Turn on flashing for new active nodes.
             for (const nodeId of newFlashingIds) {
                 const nodeElement = document.getElementById(nodeId);
                 if (nodeElement && !nodeElement.classList.contains('flashing-node')) {
@@ -181,12 +316,10 @@
                 }
             }
             
-            // 3. Update our state to reflect the currently flashing nodes.
             currentlyFlashingNodes = new Set(
                 Array.from(document.querySelectorAll('.flashing-node'))
             );
             
-            // (The logic to update map data for fog of war remains the same)
             if(status.is_running && status.active_workers.length > 0){
                 fetch('/api/map').then(res => res.json()).then(data => {
                     mapDataCache = data.nodes;
@@ -196,7 +329,7 @@
         });
     }
     
-    // 5. Fog of War
+    // 7. Fog of War
     toggleFogBtn.addEventListener('click', () => {
         isFogOn = !isFogOn;
         if(isFogOn) {
