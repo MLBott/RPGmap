@@ -128,6 +128,7 @@ To run the Building Constructor:
   - When finished, optionally 'Preview JSON', click 'Save to World' to export into the world_map.json
   - Finallly, copy the world_map.json back into your main folder, overwriting the original.
 
+<img src="https://github.com/MLBott/RealmGen-AI/blob/main/building_constructor_example.png" width="200" height="150">
 ![Building Interior Constructor](https://github.com/MLBott/RealmGen-AI/blob/main/building_constructor_example.png)
 
 
