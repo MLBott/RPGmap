@@ -40,11 +40,72 @@
             <div class="control-group"><button onclick="importBuildingFromWorld()">🔎 Import</button></div>
             <div class="control-group"><button onclick="previewWorldUpdate()">📄 Preview JSON</button></div>
             <div class="control-group"><button onclick="saveBuildingToWorld()">💾 Save to World</button></div>
+            <div class="control-group"><button onclick="undo()">↩️ Undo</button></div>
         </div>
         <div class="controls">
             <div class="control-group"><label for="buildingType">Building Type</label><select id="buildingType"><option value="castle" selected>Castle</option></select></div>
             <div class="control-group"><label for="gridSize">Grid Size</label><select id="gridSize"><option value="50" selected>50x50</option><option value="80">80x80</option></select></div>
-            <div class="control-group"><label>Editing Tool</label><select id="editTool"><option value="wall.">Wall</option><option value="hallway.">Hallway</option><option value="bedroom.">Bedroom</option><option value="kitchen.">Kitchen</option><option value="dining room.">Dining Room</option><option value="gate.">Gate</option></select></div>
+            <div class="control-group"><label>Editing Tool</label>
+                <select id="editTool">
+                    <option value="wall.">Wall</option>
+                    <option value="hallway.">Hallway</option>
+                    <option value="courtyard">Courtyard</option>
+                    <option value="barbican">Barbican</option>
+                    <option value="portcullis">Portcullis</option>
+                    <option value="curtain wall">Curtain Wall</option>
+                    <option value="gatehouse">Gatehouse</option>
+                    <option value="great hall">Great Hall</option>
+                    <option value="kitchen">Kitchen</option>
+                    <option value="stable">Stable</option>
+                    <option value="chapel">Chapel</option>
+                    <option value="well">Well</option>
+                    <option value="inner bailey">Inner Bailey</option>
+                    <option value="outer bailey">Outer Bailey</option>
+                    <option value="keep">Keep</option>
+                    <option value="drawbridge">Drawbridge</option>
+                    <option value="moat">Moat</option>
+                    <option value="arrow loop">Arrow Loop</option>
+                    <option value="wall walk">Wall Walk</option>
+                    <option value="tower">Tower</option>
+                    <option value="armory">Armory</option>
+                    <option value="servant quarter">Servant Quarter</option>
+                    <option value="garderobe">Garderobe</option>
+                    <option value="pantry">Pantry</option>
+                    <option value="buttery">Buttery</option>
+                    <option value="granary">Granary</option>
+                    <option value="blacksmith forge">Blacksmith Forge</option>
+                    <option value="undercroft">Undercroft</option>
+                    <option value="guard room">Guard Room</option>
+                    <option value="treasury">Treasury</option>
+                    <option value="solar">Solar</option>
+                    <option value="guest chamber">Guest Chamber</option>
+                    <option value="training yard">Training Yard</option>
+                    <option value="inquisitor quarter">Inquisitor Quarter</option>
+                    <option value="throne room">Throne Room</option>
+                    <option value="war room">War Room</option>
+                    <option value="companion chamber">Companion Chamber</option>
+                    <option value="guest quarter">Guest Quarter</option>
+                    <option value="library">Library</option>
+                    <option value="advisor chamber">Advisor Chamber</option>
+                    <option value="sitting room">Sitting Room</option>
+                    <option value="wine cellar">Wine Cellar</option>
+                    <option value="josephine office">Josephine Office</option>
+                    <option value="cullen office">Cullen Office</option>
+                    <option value="rookery">Rookery</option>
+                    <option value="bathing chamber">Bathing Chamber</option>
+                    <option value="wardrobe">Wardrobe</option>
+                    <option value="music room">Music Room</option>
+                    <option value="scribe quarter">Scribe Quarter</option>
+                    <option value="private study">Private Study</option>
+                    <option value="map room">Map Room</option>
+                    <option value="research chamber">Research Chamber</option>
+                    <option value="storage room">Storage Room</option>
+                    <option value="laundry">Laundry</option>
+                    <option value="conversation nook">Conversation Nook</option>
+                    <option value="dining chamber">Dining Chamber</option>
+                    <option value="linen storage">Linen Storage</option>
+                    <option value="cleaning area">Cleaning Area</option>
+                </select></div>
             <div class="control-group"><button onclick="generateBuilding()">🎲 Generate Rooms</button></div>
             <div class="control-group"><button onclick="resetBuildingData()">🗑️ Clear All</button></div>
         </div>
@@ -73,15 +134,80 @@
 
     <script>
         let buildingData, canvas, ctx, isDrawing = false, cellSize;
+        let historyStack = [];
 
         const getTool = () => document.getElementById('editTool').value;
         const getCurrentFloor = () => buildingData.floors[buildingData.currentFloor];
 
-        const colors = { default: '#a4b0be', wall: '#576574', gate: '#f0932b', bedroom: '#6c5ce7', kitchen: '#e84393', hallway: '#fd79a8', 'dining room': '#00b894' };
+        const colors = { default: '#a4b0be',
+            wall: '#576574',
+            hallway: '#fd79a8',
+            courtyard: '#ffe066',
+            barbican: '#b2bec3',
+            portcullis: '#636e72',
+            'curtain wall': '#636e72',
+            gatehouse: '#fab1a0',
+            'great hall': '#fdcb6e',
+            kitchen: '#e17055',
+            stable: '#a3cbac',
+            chapel: '#b388ff',
+            well: '#00b894',
+            'inner bailey': '#dfe6e9',
+            'outer bailey': '#b2bec3',
+            keep: '#636e72',
+            drawbridge: '#00b894',
+            moat: '#74b9ff',
+            'arrow loop': '#636e72',
+            'wall walk': '#b2bec3',
+            tower: '#636e72',
+            armory: '#b2bec3',
+            'servant quarter': '#ffeaa7',
+            garderobe: '#81ecec',
+            pantry: '#fab1a0',
+            buttery: '#fdcb6e',
+            granary: '#ffeaa7',
+            'blacksmith forge': '#636e72',
+            undercroft: '#636e72',
+            'guard room': '#636e72',
+            treasury: '#fdcb6e',
+            solar: '#ffeaa7',
+            'guest chamber': '#b2bec3',
+            'training yard': '#ffe066',
+            'inquisitor quarter': '#dfe6e9',
+            'throne room': '#fdcb6e',
+            'war room': '#636e72',
+            'companion chamber': '#b2bec3',
+            'guest quarter': '#b2bec3',
+            library: '#00b894',
+            'advisor chamber': '#b2bec3',
+            'sitting room': '#ffeaa7',
+            'wine cellar': '#b2bec3',
+            'josephine office': '#b2bec3',
+            'cullen office': '#b2bec3',
+            rookery: '#636e72',
+            'bathing chamber': '#81ecec',
+            wardrobe: '#ffeaa7',
+            'music room': '#b388ff',
+            'scribe quarter': '#b2bec3',
+            'private study': '#00b894',
+            'map room': '#00b894',
+            'research chamber': '#b2bec3',
+            'storage room': '#b2bec3',
+            laundry: '#81ecec',
+            'conversation nook': '#ffeaa7',
+            'dining chamber': '#fdcb6e',
+            'linen storage': '#ffeaa7',
+            'cleaning area': '#81ecec' };
         const getNodeColor = (node) => {
-            const desc = (node.description_base || '').toLowerCase();
-            const type = desc.split('.')[0];
-            return colors[type] || colors.default;
+            let desc = (node.description_base || '').toLowerCase().trim();
+            // Remove trailing @area if present
+            desc = desc.replace(/\s*@area\s*$/i, '').trim();
+            // Extract type: before first period or first space
+            let type = desc.split('.')[0].split(' ')[0];
+            // Try to match full phrase (for multi-word types)
+            // Find the type in colors that matches the start of desc
+            let foundType = Object.keys(colors).find(key => desc.startsWith(key));
+            return colors[foundType] || colors[type] || colors.default;
         };
 
         window.onload = () => {
@@ -102,13 +228,18 @@
             updateUI();
         }
 
+        function undo() {
+            if (historyStack.length === 0) return;
+            getCurrentFloor().nodes = JSON.parse(historyStack.pop());
+            redraw();
+        }
+
         function setupEventListeners() {
             canvas.addEventListener('mousedown', (e) => { isDrawing = true; handleCanvasInteraction(e); });
             canvas.addEventListener('mousemove', (e) => { if (isDrawing) handleCanvasInteraction(e); });
             document.addEventListener('mouseup', () => { isDrawing = false; });
             document.getElementById('gridSize').addEventListener('change', updateUI);
         }
-        
         function handleCanvasInteraction(e) {
             const rect = canvas.getBoundingClientRect();
             const x = Math.floor((e.clientX - rect.left) / cellSize);
@@ -116,14 +247,21 @@
 
             if (x < 0 || x >= buildingData.gridSize || y < 0 || y >= buildingData.gridSize) return;
 
+            // Save state for undo BEFORE making changes
+            historyStack.push(JSON.stringify(getCurrentFloor().nodes));
+
             let node = getCurrentFloor().nodes.find(n => n.coords.x === x && n.coords.y === y);
             if (!node) {
                 node = { coords: { x, y }, terrain: { label: 'Castle' } };
                 getCurrentFloor().nodes.push(node);
             }
-            node.description_base = getTool();
+            let desc = getTool();
+            // Always ensure @area is at the end
+            desc = desc.replace(/\s*@area\s*$/i, '').trim() + ' @area';
+            node.description_base = desc;
             redraw();
         }
+        
         
         function updateUI() {
             buildingData.gridSize = parseInt(document.getElementById('gridSize').value);

@@ -68,7 +68,7 @@ def get_updated_nodes_for_preview(world_data: Dict, edited_building_data: Dict) 
         for local_coords, local_node in local_node_map.items():
             world_x, world_y = local_coords[0] + origin['x'], local_coords[1] + origin['y']
             preview_node = { "coords": {"x": world_x, "y": world_y}, "terrain": {"label": "Castle"} }
-
+            preview_node['terrain']['type'] = "K"
             desc = local_node.get('description_base', 'wall.')
             if '.' not in desc: desc += '.'
             if not desc.lower().startswith('wall.'):
