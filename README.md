@@ -114,15 +114,16 @@ In the background, beyond the trees, *faint hints of deep waters can be detected
 
 ![MWpic2](https://github.com/MLBott/RealmGen-AI/blob/main/node_editor_and_crawler_example.gif)
 
+---
+## Optional Building Interior Constructor Tool:
 
-## Optional Building Interior Generator Tool:
-
-To run the building generator:
+The Building Constructor tool allows you to mark interior nodes of a building with more specific types. Helps to inform the LLM description crawler on what those interior nodes are supposed to be.
+To run the Building Constructor:
   - Open Building Project folder
   - Copy your world_map.json file into this folder
-  - Open terminal and run: python bildgen_server.py
+  - Open terminal and run: python buildgen_server.py
   - With the Building Constructor tool now open:
-  - In 'Building Label from World' type the building type you are importing then click 'Import'
+  - In 'Building Label from World' input the building type you are importing then click 'Import'
   - Edit the types of nodes of your building using the 'Editing Tool' dropdown
   - When finished, optionally 'Preview JSON', click 'Save to World' to export into the world_map.json
   - Finallly, copy the world_map.json back into your main folder, overwriting the original.
