@@ -73,7 +73,7 @@ def get_updated_nodes_for_preview(world_data: Dict, edited_building_data: Dict) 
             if '.' not in desc: desc += '.'
             if not desc.lower().startswith('wall.'):
                  room_name = local_node.get('room_name', desc.split('.')[0].capitalize())
-                 desc = f"{room_name}. An interesting room inside the castle."
+                 desc = f"{room_name}."
             preview_node['description_base'] = desc
 
             new_connections = {}
